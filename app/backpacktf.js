@@ -129,7 +129,7 @@ async function heartbeat() {
             updates.push(`${bumped} listing${bumped === 1 ? '' : 's'} bumped.`);
         }
         if (body.listings) {
-            log.info("Your listings were updated.");
+            log.debug("Your listings were updated.");
         }
         if (currenciesChanged) {
             updates.push(`Community suggested currency exchange rates updated.`);
@@ -141,7 +141,7 @@ async function heartbeat() {
             if (boupdates.length) updates.push(boupdates.join(", ") + ".");
         }
 
-        log[updates.length ? "info" : "verbose"](`Heartbeat sent to backpack.tf. ${updates.join(" ")}`);
+        log[updates.length ? "info" : "debug"](`Heartbeat sent to backpack.tf. ${updates.join(" ")}`);
         return(1000 * 95);
 
     } catch(err){
