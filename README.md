@@ -1,5 +1,10 @@
 # bptfAutomatic #
 
+### What I changed so far ###
+* Updated modules
+* Better process handling
+* Fixed the issue with logins not saving
+ 
 ### Easy install ###
 * Install [Node.js](https://nodejs.org/en/download/current/) - 32 bit version for 32 bit systems or 64 bit version for 64 bit systems (16.0.0 minimum).
 * Download bptfautomatic app
