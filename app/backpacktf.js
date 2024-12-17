@@ -747,3 +747,4 @@ function acceptOffer(offer, tryAgain) {
     function trunc(n) {
         return Math.floor(n * 100) / 100;}
     }
+    Config = require('./config');
