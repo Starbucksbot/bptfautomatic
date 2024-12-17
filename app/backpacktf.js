@@ -2,11 +2,11 @@ const TradeOfferManager = require('steam-tradeoffer-manager');
 const AutomaticOffer = require('./automatic-offer');
 const Utils = require('./utils');
 const Prompts = require('./prompts');
-const fs = require('fs');
+const fs = require('fs/promises'); // Use fs/promises for asynchronous file operations
 
 let manager, log, Config, automatic, community;
 
-// Exported Functions
+// Export functions at the top for clarity, but define them later in the file
 exports.heartbeat = heartbeat;
 exports.register = register;
 exports.handleBuyOrdersFor = handleBuyOrdersFor;
@@ -14,7 +14,7 @@ exports.handleSellOrdersFor = handleSellOrdersFor;
 exports.finalizeOffer = finalizeOffer;
 exports.getToken = getToken;
 exports.getApiKey = getApiKey;
-exports.exchangeCurrencies = exchangeCurrencies;
+exports.exchangeCurrencies = exchangeCurrencies; // Ensure this function is defined below
 exports.handleSellOrder = handleSellOrder;
 
 // Register function to initialize global variables
@@ -42,10 +42,11 @@ async function getToken() {
 }
 
 async function getApiKey() {
-    const apiKey = await Prompts.backpackApiKey();
-    return saveCredential('ApiKey', apiKey);
+    const apikey = await Prompts.backpackApiKey();
+    return saveCredential('ApiKey', apikey);
 }
 
+// Function to update buy orders
 function updateBuyOrders(body) {
     if (!automatic.buyOrdersEnabled() || !body.listings) {
         return { updated: false, added: 0, removed: 0 };
@@ -66,6 +67,7 @@ function updateBuyOrders(body) {
     return { updated: added > 0 || removed > 0, added, removed };
 }
 
+// Heartbeat function, now async for proper error handling
 async function heartbeat() {
     try {
         const { bptfToken: token, bptApiKey: apiKey } = Config.account();
@@ -89,7 +91,11 @@ async function heartbeat() {
             form: { key: apiKey }
         });
 
-        if (!resp2?.currencies?.keys?.price?.value) throw ['Cannot get keys data', 403];
+        const keyPrice = resp2?.currencies?.keys?.price?.value;
+        if (!keyPrice || typeof keyPrice !== 'number') {
+            throw new Error('Invalid key price data from API');
+        }
+        
 
         automatic.keyPrice = resp2.currencies.keys.price.value;
 
@@ -102,8 +108,9 @@ async function heartbeat() {
             url: automatic.apiPath("classifieds/listings/v1"),
             form: params
         });
-
+        
         let updates = [];
+        
         let currenciesChanged = JSON.stringify(automatic.listings) !== JSON.stringify(body.listings);
         let buyOrdersChanged = updateBuyOrders(body);
         let bumped = body.bumped;
@@ -114,26 +121,26 @@ async function heartbeat() {
         if (body.listings) log.info("Your listings were updated.");
         if (currenciesChanged) updates.push("Community suggested currency exchange rates updated.");
         if (buyOrdersChanged.updated) {
-            updates.push(`${buyOrdersChanged.added > 0 ? `+${buyOrdersChanged.added} buy order(s)` : ''}${buyOrdersChanged.removed > 0 ? `, -${buyOrdersChanged.removed} buy order(s)` : ''}.`);
+            let boupdates = [];
+            if (buyOrdersChanged.added) boupdates.push(`+${buyOrdersChanged.added} buy order(s)`);
+            if (buyOrdersChanged.removed) boupdates.push(`-${buyOrdersChanged.removed} buy order(s)`);
+            if (boupdates.length) updates.push(boupdates.join(", ") + ".");
         }
 
         log[updates.length ? "info" : "verbose"](`Heartbeat sent to backpack.tf. ${updates.join(" ")}`);
-        return 1000 * 95;
+        return 1000 * 95; // Return timeout in milliseconds
+
     } catch (err) {
         const [msg, statusCode, data] = err;
         let retryTimeout = 1000 * 60 * 1; // Default to 1 minute
 
         if (data?.response?.message) {
-            log.warn("Invalid backpack.tf api: " + (data.response.message || "(no reason given)"));
+            log.warn(`Invalid backpack.tf api: ${data.response.message || "(no reason given)"}`);
             return "getApiKey";
-        }
-        
-        if (data?.message && data.message.includes('access token')) {
-            log.warn("Invalid backpack.tf token: " + (data.message || "(no reason given)"));
+        } else if (data?.message && data.message.includes('access token')) {
+            log.warn(`Invalid backpack.tf token: ${data.message || "(no reason given)"}`);
             return "getToken";
-        }
-
-        if (Array.isArray(msg) && msg.length === 3) { // Cloudflare
+        } else if (Array.isArray(msg) && msg.length === 3) { // Cloudflare
             log.warn(`${msg[0]}; backpack.tf may be down, or you are captcha'd by Cloudflare (only if you experience this problem on other sites).`);
         } else if (statusCode >= 500) {
             log.warn(`backpack.tf is down (${statusCode})`);
@@ -144,23 +151,51 @@ async function heartbeat() {
         return retryTimeout;
     }
 }
+function handleHeartbeatError(err) {
+    const [msg, statusCode, data] = err;
 
-// Trading functions
+    if (data?.response?.message) {
+        log.warn(`Invalid backpack.tf api: ${data.response.message || "(no reason given)"}`);
+        return "getApiKey";
+    }
+
+    if (data?.message && data.message.includes('access token')) {
+        log.warn(`Invalid backpack.tf token: ${data.message || "(no reason given)"}`);
+        return "getToken";
+    }
+
+    if (Array.isArray(msg) && msg.length === 3) { // Cloudflare
+        log.warn(`${msg[0]}; backpack.tf may be down, or you are captcha'd by Cloudflare.`);
+    } else if (statusCode >= 500) {
+        log.warn(`backpack.tf is down (${statusCode})`);
+    } else {
+        log.warn(`Error ${statusCode || ""} contacting backpack.tf (${msg}), trying again in 1 minute`.trim());
+    }
+
+    return 1000 * 60 * 1; // Retry in 1 minute
+}
+
+
+/* Trading */
 function diffBuyOrder(offer, cur, item, allignore) {
     let theirs = offer.currencies.theirs;
     let ignored = [];
 
+    // Remove previously implied value for craft weapons
     if (AutomaticOffer.isCraftWeapon(item)) {
-        theirs.metal -= 1/18; // Remove previously implied value for craft weapons
+        theirs.metal -= 1/18;
     }
 
-    if (cur.metal) theirs.metal += cur.metal;
+    if (cur.metal) {
+        theirs.metal += cur.metal;
+    }
+
     if (cur.keys) {
         theirs.keys += cur.keys;
         let diff = cur.keys;
         for (let i = 0; i < offer.exchange.ours.length; i += 1) {
-            const checkItem = offer.exchange.ours[i];
-            if (AutomaticOffer.isKey(checkItem, true) && allignore.indexOf(i) === -1) {
+            const item = offer.exchange.ours[i];
+            if (AutomaticOffer.isKey(item, true) && !allignore.includes(i)) {
                 diff -= 1;
                 ignored.push(i);
                 if (diff === 0) break;
@@ -174,11 +209,13 @@ function diffBuyOrder(offer, cur, item, allignore) {
 function createUserItemDict(theirs) {
     let items = {};
 
+    // Create a list of items to compare with buy orders
     for (let index = 0; index < theirs.length; index += 1) {
         const item = theirs[index];
         const appdata = item.app_data;
 
-        if (!appdata) return false; // Abort if app_data is missing
+        // Abort if app_data is missing due to Steam issues
+        if (!appdata) return false;
 
         let defindex = +appdata.def_index;
 
@@ -188,15 +225,16 @@ function createUserItemDict(theirs) {
         defindex = fixDefindexBug[defindex] || defindex;
 
         const isAustralium = AutomaticOffer.itemAustralium(item);
-        const quality = +appdata.quality || 0; // Normal quality items don't have a 'quality'
+        const quality = +appdata.quality || 0;
         const skin = AutomaticOffer.StrangeSkin(item);
         const effectiveQuality = skin === 15 ? 15 : quality;
         const matchName = AutomaticOffer.toBackpackName(item);
 
-        if (AutomaticOffer.isMetal(item)) continue; // Ignore metal
+        // Ignore metal items
+        if (AutomaticOffer.isMetal(item)) continue;
 
-        let tag = defindex + "_" + effectiveQuality + "_" + isAustralium;
-        if (effectiveQuality !== 11) tag += "_" + matchName;
+        let tag = `${defindex}_${effectiveQuality}_${isAustralium}`;
+        if (effectiveQuality !== 11) tag += `_${matchName}`;
 
         (items[tag] = (items[tag] || [])).push(index);
     }
@@ -204,19 +242,21 @@ function createUserItemDict(theirs) {
 }
 
 function applyFilter(obj, prop, arr, filter) {
-    obj[prop] = filter.length ? arr.filter((_, index) => filter.indexOf(index) === -1) : arr;
+    obj[prop] = filter.length ? arr.filter((_, index) => !filter.includes(index)) : arr;
 }
-
 function eqParticle(item, bpItem) {
     let particle = AutomaticOffer.itemParticleEffect(item);
+
     if (particle) {
         let bpName = AutomaticOffer.toBackpackName(item);
         return bpName === bpItem.item.name; // Check if particle names match
     }
+
     return false;
 }
 
 function findParticleMatch(item, matches) {
+    // Use find for a more modern approach
     return matches.find(match => eqParticle(item, match));
 }
 
@@ -224,7 +264,7 @@ function buyItem(offer, bpItem, invItem, invItemIndex, oursignore, theirsignore)
     let ignore = diffBuyOrder(offer, bpItem.currencies, invItem, oursignore);
 
     oursignore = oursignore.concat(ignore);
-    theirsignore.push(invItemIndex);
+    theirsignore.push(invItemIndex); // Exclude this item from further handling
     if (!offer.stocklimit) offer.stocklimit = [];
     offer.stocklimit.push(AutomaticOffer.toBackpackName(invItem));
     offer.bought.push(invItemIndex);
@@ -240,7 +280,8 @@ function handleBuyOrdersFor(offer) {
         return;
     }
 
-    let oursignore = [], theirsignore = [];
+    let oursignore = [];
+    let theirsignore = [];
     let items = createUserItemDict(theirs);
     let unusuals = new Map();
 
@@ -249,11 +290,11 @@ function handleBuyOrdersFor(offer) {
         return false;
     }
 
-    for (let i = 0; i < bo.length; i += 1) {
-        const item = bo[i];
+    // Process buy orders
+    for (const item of bo) {
         const quality = item.item.quality;
         const attributes = item.item.attributes || [];
-        const isAustralium = attributes.find(attr => attr.defindex === 2027) ? 1 : 0;
+        const isAustralium = attributes.some(attr => attr.defindex === 2027) ? 1 : 0;
         const matchName = item.item.name;
         let tag = `${item.item.defindex}_${quality}_${isAustralium}`;
 
@@ -262,14 +303,13 @@ function handleBuyOrdersFor(offer) {
         const indices = items[tag];
         if (!indices) continue;
 
-        if (item.item.name === 'Mann Co. Supply Crate Key') continue;
+        if (matchName === 'Mann Co. Supply Crate Key') continue;
 
         const listingParticle = attributes[0]?.float_value || 0;
         const uncraft = !!item.item.flag_cannot_craft;
         let killstreak = matchName.includes('Killstreak') ? (attributes[0]?.float_value || 0) : 0;
 
-        for (let i2 = 0; i2 < indices.length; i2 += 1) {
-            const index = indices[i2];
+        for (const index of indices) {
             const orig = theirs[index];
 
             if (quality === 5) { // Unusual
@@ -280,118 +320,443 @@ function handleBuyOrdersFor(offer) {
                 continue;
             }
 
+            // Check for particle match if applicable
             if (quality === 5 && listingParticle && !eqParticle(orig, item)) continue;
+
             if (uncraft !== AutomaticOffer.itemIsUncraftable(orig)) continue;
-            if (killstreak !== AutomaticOffer.itemKillstreakTier(orig)) continue;
+
+            if (Number(killstreak) !== AutomaticOffer.itemKillstreakTier(orig)) continue;
 
             buyItem(offer, item, orig, index, oursignore, theirsignore);
         }
     }
 
-    let oursPrice = ours.keys + (ours.metal / automatic.keyPrice);
+    // Handle unusuals with priority for matched particles
+    for (let [orig, matches] of unusuals) {
+        let match = findParticleMatch(orig, matches);
+
+        if (!match) {
+            match = matches.find(item => !item.flags || !item.flags.particle);
+        }
+
+        if (match) {
+            buyItem(offer, match, orig, orig.__index, oursignore, theirsignore);
+        }
+    }
+
+    // Apply filters to remove ignored items
+    applyFilter(offer.items, 'ours', ours, oursignore);
+    applyFilter(offer.items, 'theirs', theirs, theirsignore);
+}
+for (let [orig, matches] of unusuals) {
+    let match = findParticleMatch(orig, matches);
+
+    if (!match) {
+        match = matches.find(item => !(item.flags?.particle));
+    }
+    
+    if (match) {
+        buyItem(offer, match, orig, orig.__index, oursignore, theirsignore);
+    }
+}
+
+applyFilter(offer.items, 'ours', ours, oursignore);
+applyFilter(offer.items, 'theirs', theirs, theirsignore);
+
+function handleOther(offer, other) {
+    if (other && (other.scammer || other.banned)) {
+        const decline = Config.get().declineBanned;
+        offer.log("info", `Sender is marked as a scammer or banned${decline ? ", declining" : ""}`);
+
+        if (decline) {
+            offer.decline()
+                .then(() => offer.log("debug", `Offer declined`))
+                .catch((err) => offer.log("warn", "Error declining this offer"));
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
+function exchangeCurrencies(ours, theirs, options) {
+    let { keysAverage, mayExchangeToMetal, mayExchangeToKeys } = options;
+
+    // Hard disable for security reasons
+    mayExchangeToMetal = false;
+    mayExchangeToKeys = false;
+
+    if (!keysAverage) {
+        // Disabled currency exchange due to issues
+        return { keysOk: false, metalOk: false };
+    }
+
+    let metalOk = true;
+    let keysOk = true;
+
+    // Check if we need metal
+    if (ours.metal !== 0) {
+        if (ours.metal > theirs.metal) {
+            metalOk = false;
+            if (theirs.keys > 0 && mayExchangeToMetal) {
+                let tv = trunc(theirs.metal + theirs.keys * keysAverage);
+                metalOk = tv >= ours.metal && tv >= 0;
+
+                if (metalOk) {
+                    let diff = trunc(ours.metal - theirs.metal);
+                    theirs.metal += diff; // Set their metal to match ours
+                    theirs.keys -= diff / keysAverage;
+                }
+            }
+        }
+    }
+
+    // Check if we need keys
+    if (metalOk && ours.keys !== 0) {
+        if (ours.keys > theirs.keys) {
+            keysOk = false;
+            if (theirs.metal > 0 && mayExchangeToKeys) {
+                let tv = trunc(theirs.keys + theirs.metal / keysAverage);
+                keysOk = tv >= ours.keys && tv >= 0;
+
+                theirs.metal -= trunc((ours.keys - theirs.keys) * keysAverage);
+
+                // Recheck metal if the exchange affected it
+                if (ours.metal > theirs.metal) {
+                    metalOk = false;
+                }
+            }
+        }
+    }
+
+    return { keysOk, metalOk };
+}
+// Updated for modern Node.js and fixed logic issues
+const { trunc } = Math;
+
+function evaluateCurrency(metalOk, ours, theirs, keysAverage, mayExchangeToKeys) {
+    let keysOk = true;
+
+    if (metalOk && ours.keys !== 0) {
+        if (ours.keys > theirs.keys) {
+            keysOk = false;
+
+            if (theirs.metal > 0 && mayExchangeToKeys) {
+                const tv = trunc(theirs.keys + theirs.metal / keysAverage);
+                keysOk = tv >= ours.keys && tv >= 0;
+
+                if (!keysOk) {
+                    const requiredMetal = trunc((ours.keys - theirs.keys) * keysAverage);
+                    theirs.metal -= requiredMetal;
+
+                    if (ours.metal > theirs.metal) {
+                        metalOk = false;
+                    }
+                }
+            }
+        }
+    }
+
+    return { keysOk, metalOk };
+}
+
+function handleSellOrder(offer, listings) {
+    if (listings.length === 0 && offer.bought.length === 0) {
+        offer.log("info", "No matching listings found for offer, skipping.");
+        offer.logDetails("info");
+        return false;
+    }
+
+    // Stock limit checking
+    const stock = [];
+    const stocklimit = offer.stocklimit || [];
+
+    if (stocklimit.length > 1) {
+        const stockCount = stocklimit.reduce((acc, item) => {
+            acc[item] = (acc[item] || 0) + 1;
+            return acc;
+        }, {});
+
+        const stockValues = Object.values(stockCount);
+        const stockMax = Math.max(...stockValues);
+
+        if (stockMax > 1) {
+            offer.log("info", "Too many items were sent. Stock limit exceeded.");
+            return false;
+        }
+    }
+
+    // End stock limit check
+
+    const ours = { ...offer.currencies.ours };
+    const theirs = { ...offer.currencies.theirs };
+    const listingIds = {};
+
+    listings.forEach((listing) => {
+        if (listing.item) {
+            listingIds[listing.item.id] = true;
+        }
+
+        for (const cur in listing.currencies) {
+            if (Object.prototype.hasOwnProperty.call(ours, cur)) {
+                ours[cur] += listing.currencies[cur];
+            }
+        }
+
+        // Adjust for keys being sold for metal
+        if (listing.defindex === 5021 && listing.quality === 6) {
+            ours.keys -= 1;
+        }
+    });
+
+    // Perform currency evaluation
+    const { keysOk, metalOk } = evaluateCurrency(true, ours, theirs, offer.keysAverage, offer.mayExchangeToKeys);
+
+    if (!keysOk || !metalOk) {
+        offer.log("info", "Currency mismatch in offer, rejecting.");
+        return false;
+    }
+
+    return true;
+}
+
+function unique(arr) {
+    return [...new Set(arr)];
+}
+
+function handleSellOrdersFor(offer) {
+    return getUserTrades(offer).then(([_, response]) => {
+        if (!handleOther(offer, response.other)) {
+            return false;
+        }
+
+        return handleSellOrder(offer, response.store);
+    });
+}
+
+function processLeftoverItems(offer, listingIds) {
+    for (const item of offer.items.ours) {
+        // Ignore metal & keys as these are handled for currency equivalency
+        if (AutomaticOffer.isMetal(item) || AutomaticOffer.isKey(item)) continue;
+
+        const id = item.assetid || item.id;
+        if (!listingIds.hasOwnProperty(id)) {
+            offer.log("info", `Contains an item that isn't in a listing (${AutomaticOffer.toBackpackName(item)}), skipping.`);
+            offer.logDetails("info");
+            return false;
+        }
+    }
+    return true;
+}
+
+function fixCurrencyValues(ours, theirs, keyPrice) {
+    for (const cur in ours) {
+        ours[cur] = trunc(ours[cur]);
+        theirs[cur] = trunc(theirs[cur]);
+    }
+
+    if (!keyPrice || typeof keyPrice !== 'number' || keyPrice < 10) {
+        console.warn(`There is a problem with the automatic key price: ${keyPrice}`);
+        return false;
+    }
+
+    if (ours.metal % 1 >= 0.99) ours.metal = Math.ceil(ours.metal);
+    if (theirs.metal % 1 >= 0.99) theirs.metal = Math.ceil(theirs.metal);
+    if (theirs.metal % 1 >= 0.1) theirs.metal += 0.01;
+
+    if (theirs.keys === ours.keys && theirs.keys >= 2) {
+        if (Math.floor(ours.metal) === Math.floor(theirs.metal) || Math.ceil(ours.metal) === Math.ceil(theirs.metal)) {
+            theirs.metal = ours.metal;
+        }
+    }
+
+    return true;
+}
+
+function evaluatePrice(ours, theirs, keyPrice) {
+    let theirsPrice = theirs.keys + (theirs.metal / keyPrice);
+    let oursPrice = ours.keys + (ours.metal / keyPrice);
 
     if (theirs.keys === ours.keys && theirs.keys < 2) {
         theirsPrice = Number(theirsPrice.toFixed(3));
         oursPrice = Number(oursPrice.toFixed(3));
     }
 
-    let priceOk = theirsPrice >= oursPrice;
-
-    let { metalOk, keysOk } = exchangeCurrencies(ours, theirs, {
-        keysAverage: automatic.currencyAvg("keys"),
-        mayExchangeToMetal: automatic.mayExchangeToCurrency("metal"),
-        mayExchangeToKeys: automatic.mayExchangeToCurrency("keys")
-    });
-
-    if (!priceOk) {
-        if (!metalOk) {
-            offer.log("info", `doesn't offer enough metal (required = ${ours.metal}, given = ${theirs.metal}), skipping this offer.`);
-            offer.abandon({ recheck: true });
-            return;
-        }
-
-        if (!keysOk) {
-            offer.log("info", `doesn't offer enough keys (required = ${ours.keys}, given = ${theirs.keys}), skipping this offer.`);
-            offer.abandon({ recheck: true });
-            return;
-        }
-    }
-
-    if (offer.stocklimit && offer.stocklimit.length) {
-        let stockLimitReached = offer.stocklimit.some(itemName => {
-            return offer.items.ours.some(ourItem => ourItem.name === itemName);
-        });
-
-        if (stockLimitReached) {
-            offer.log("info", "Stock limit reached for some items, rejecting offer.");
-            offer.abandon({ recheck: true });
-            return;
-        }
-    }
-
-    // Handle finalizing the offer with all adjustments
-    finalizeOffer(offer);
+    return { priceOk: theirsPrice >= oursPrice, theirsPrice, oursPrice };
 }
 
-// Function to finalize offer after processing
-async function finalizeOffer(offer) {
-    const { exchange, items } = offer;
-    const { ours, theirs } = exchange;
+function obviousScammer(offer) {
+    const id = offer.partner64();
 
-    if (offer.bought.length > 0) {
-        offer.log("info", `Successfully bought items: ${offer.bought.join(", ")}`);
-    }
+    const halfYear = 15768000;
+    const timeCheck = Math.floor(Date.now() / 1000) - halfYear;
 
-    const offerSummary = {
-        ours: items.ours,
-        theirs: items.theirs,
-        bought: offer.bought,
-        rejected: offer.rejected || [],
+    const options = {
+        url: `https://api.steampowered.com/IPlayerService/GetSteamLevel/v1/?key=${manager.apiKey}&steamid=${id}`
     };
 
-    offerSummaries[offer.id] = offerSummary;
+    return Utils.getJSON(options).then(([body]) => {
+        const steamLevel = Number(body.response.player_level);
 
-    // Log offer details for debugging or record keeping
-    fs.appendFileSync('offer_log.txt', `Offer ID: ${offer.id}\n`);
-    fs.appendFileSync('offer_log.txt', `Ours: ${JSON.stringify(offerSummary.ours)}\n`);
-    fs.appendFileSync('offer_log.txt', `Theirs: ${JSON.stringify(offerSummary.theirs)}\n`);
-    fs.appendFileSync('offer_log.txt', `Bought: ${JSON.stringify(offerSummary.bought)}\n`);
-    fs.appendFileSync('offer_log.txt', `Rejected: ${JSON.stringify(offerSummary.rejected)}\n`);
-    fs.appendFileSync('offer_log.txt', `\n`);
+        return Utils.getJSON({
+            url: `https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v1/?key=${manager.apiKey}&steamids=${id}`
+        }).then(([body]) => {
+            const player = body.response.players.player[0];
+            const profileVisibility = Number(player.communityvisibilitystate) || 0;
+            const createdTime = Number(player.timecreated) || 0;
+
+            if (steamLevel < 4 || createdTime > timeCheck || profileVisibility === 1) {
+                offer.log("info", "This trade may be with an obvious scammer, check manually.");
+                return false;
+            }
+
+            return true;
+        });
+    });
 }
 
-// Function to handle sell orders for the offer
-function handleSellOrdersFor(offer) {
-    const { ours, theirs } = offer.exchange;
+function getUserTrades(offer) {
+    const selling = offer.items.ours.map((item) => item.assetid || item.id);
 
-    // If there are no sell orders, we just pass the offer as it is
-    if (!automatic.sellOrdersEnabled()) {
-        offer.items.ours = ours;
-        offer.items.theirs = theirs;
-        return;
+    const options = {
+        url: automatic.apiPath("IGetUserTrades/v1"),
+        qs: {
+            steamid: automatic.getOwnSteamID(),
+            steamid_other: offer.partner64(),
+            ids: selling
+        },
+        checkResponse: true
+    };
+
+    return Utils.getJSON(options).catch((msg, statusCode) => {
+        let errorMsg = msg;
+
+        if (Array.isArray(msg) && msg.length === 3) {
+            errorMsg = `${msg[0]}; backpack.tf may be down, or you are captcha'd by Cloudflare.`;
+        } else if (statusCode >= 500) {
+            errorMsg = `backpack.tf is down (${statusCode})`;
+        }
+
+        log.warn(`Error occurred getting sell listings (${errorMsg}), retrying in 1 minute.`);
+        return Utils.after.minutes(1).then(() => handleSellOrdersFor(offer));
+    });
+}
+
+function checkEscrowed(offer) {
+    const acceptEscrow = Config.get().acceptEscrow;
+    if (acceptEscrow === true) {
+        return Promise.resolve(false);
     }
 
-    let updatedOurs = [...ours];
-    let updatedTheirs = [...theirs];
+    return offer.determineEscrowDays().then((escrowDays) => {
+        if (escrowDays > 0) {
+            if (acceptEscrow === "decline") {
+                offer.log("info", "Would incur an escrow period, declining.");
+                offer.decline()
+                    .then(() => offer.log("debug", "Declined"))
+                    .catch((err) => offer.log("warn", "Cannot decline this offer"));
+            } else {
+                offer.warn("warn", `Would incur up to ${escrowDays} escrow. Not accepting.`);
+            }
 
-    // Logic for handling sell orders
-    updatedOurs = updatedOurs.filter(item => !automatic.sellOrders.some(order => order.id === item.id));
-    updatedTheirs = updatedTheirs.filter(item => !automatic.sellOrders.some(order => order.id === item.id));
+            return true;
+        }
 
-    offer.items.ours = updatedOurs;
-    offer.items.theirs = updatedTheirs;
-
-    // Log the changes for debugging purposes
-    offer.log("info", `Sell orders processed. Updated 'ours' and 'theirs' lists.`);
+        return false;
+    });
 }
 
-// Example function for converting between currencies
-function exchangeCurrencies(ours, theirs, options) {
-    const result = { metalOk: true, keysOk: true };
-
-    // Here, perform any necessary calculations based on the options
-    if (ours.metal > theirs.metal) result.metalOk = false;
-    if (ours.keys > theirs.keys) result.keysOk = false;
-
-    return result;
+function finalizeOffer(offer) {
+    checkEscrowed(offer).then((escrowed) => {
+        if (!escrowed) {
+            acceptOffer(offer);
+        }
+    }).catch(err => {
+        console.log('Error in finalizeOffer', err)
+    })
 }
+
+function acceptOffer(offer, tryAgain) {
+    const secret = Config.account().identity_secret;
+    let message = offer.summary({ includeBuyOrders: true });
+
+    offer.log("trade", "Accepting, summary:\r\n" + message);
+
+    offerSummaries[offer.tid] = message;
+    async function acceptOffer(offer, tryAgain = false) {
+        try {
+            const status = await offer.accept();
+            offer.log(
+                "trade",
+                `Successfully accepted${status === 'pending' ? "; confirmation required" : ""}`
+            );
+    
+            if (status === 'pending') {
+                await confirmOffer(offer);
+            }
+        } catch (error) {
+            offer.log("warn", `Unable to accept: ${error.message || error}`);
+            if (!tryAgain) {
+                offer.log("warn", "Will try 1 more time in 30 seconds");
+                setTimeout(() => acceptOffer(offer, true), 1000 * 30);
+            }
+        }
+    }
+    
+    // Function to confirm an offer
+    async function confirmOffer(offer) {
+        const secret = Config.account().identity_secret;
+        const offerId = offer.tradeoffer.id;
+    
+        try {
+            await new Promise((resolve, reject) => {
+                community.acceptConfirmationForObject(secret, offerId, (err) => {
+                    if (err) return reject(err);
+                    resolve();
+                });
+            });
+    
+            offer.log("trade", `Offer ${offerId} confirmed`);
+        } catch (err) {
+            offer.log("warn", `Error confirming offer ${offerId}: ${err.message || err}`);
+        }
+    }
+    
+    // Function to extract asset info
+    function extractAssetInfo(item) {
+        return {
+            appid: item.appid,
+            contextid: item.contextid,
+            assetid: item.assetid || item.id,
+            classid: item.classid,
+            instanceid: item.instanceid || "0",
+            amount: item.amount || "1",
+            missing: item.missing ? "true" : "false",
+        };
+    }
+    
+    // Function to serialize an offer
+    function serializeOffer(offer) {
+        return {
+            tradeofferid: offer.id,
+            accountid_other: offer.partner.accountid,
+            steamid_other: offer.partner.getSteamID64(),
+            message: offer.message,
+            expiration_time: Math.floor(offer.expires.getTime() / 1000),
+            trade_offer_state: offer.state,
+            is_our_offer: offer.isOurOffer ? "true" : "false",
+            time_created: Math.floor(offer.created.getTime() / 1000),
+            time_updated: Math.floor(offer.updated.getTime() / 1000),
+            from_real_time_trade: offer.fromRealTimeTrade ? "true" : "false",
+            items_to_give: offer.itemsToGive.map(extractAssetInfo),
+            items_to_receive: offer.itemsToReceive.map(extractAssetInfo),
+            confirmation_method: offer.confirmationMethod || 0,
+            escrow_end_date: offer.escrowEnds ? Math.floor(offer.escrowEnds.getTime() / 1000) : 0,
+        };
+    }
+    
+    // Function to truncate a number
+    function trunc(n) {
+        return Math.floor(n * 100) / 100;}
+    }
