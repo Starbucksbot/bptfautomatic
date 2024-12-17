@@ -1,4 +1,5 @@
-const fs = require('fs');
+const fs = require('fs/promises');
+const path = require('path');
 const TradeOfferManager = require('steam-tradeoffer-manager');
 const backpack = require('./backpacktf');
 const AutomaticOffer = require('./automatic-offer');
@@ -12,12 +13,18 @@ exports.register = (Automatic) => {
     manager = Automatic.manager;
     Config = Automatic.config;
 
-    if (fs.existsSync(POLLDATA_FILENAME)) {
-        try {
-            manager.pollData = JSON.parse(fs.readFileSync(POLLDATA_FILENAME));
-        } catch (e) {
-            log.verbose("polldata.json is corrupt: ", e);
-        }
+    if (fs.existsSync(path.join(__dirname, POLLDATA_FILENAME))) {
+        fs.readFile(path.join(__dirname, POLLDATA_FILENAME), 'utf8')
+            .then(pollDataContent => {
+                try {
+                    manager.pollData = JSON.parse(pollDataContent);
+                } catch (e) {
+                    log.verbose("polldata.json is corrupt: ", e);
+                }
+            })
+            .catch(e => {
+                log.error("Error reading polldata.json: ", e);
+            });
     }
 
     manager.on('pollData', savePollData);
@@ -25,13 +32,15 @@ exports.register = (Automatic) => {
     manager.on('receivedOfferChanged', offerStateChanged);
 };
 
-function savePollData(pollData) {
-    fs.writeFile(POLLDATA_FILENAME, JSON.stringify(pollData), (err) => {
-        if (err) log.warn("Error writing poll data: " + err);
-    });
+async function savePollData(pollData) {
+    try {
+        await fs.writeFile(path.join(__dirname, POLLDATA_FILENAME), JSON.stringify(pollData));
+    } catch (err) {
+        log.warn(`Error writing poll data: ${err.message}`);
+    }
 }
 
-function handleOffer(tradeoffer) {
+async function handleOffer(tradeoffer) {
     const offer = new AutomaticOffer(tradeoffer);
     if (offer.isGlitched()) {
         offer.log("warn", `received from ${offer.partner64()} is glitched (Steam might be down).`);
@@ -42,24 +51,26 @@ function handleOffer(tradeoffer) {
 
     if (offer.fromOwner()) {
         offer.log("info", `is from owner, accepting`);
-        offer.accept().then((status) => {
+        try {
+            const status = await offer.accept();
             offer.log("trade", `successfully accepted${status === 'pending' ? "; confirmation required" : ""}`);
             log.debug("Owner offer: not sending confirmation to backpack.tf");
-        }).catch((msg) => {
+        } catch (msg) {
             offer.log("warn", `(owner offer) couldn't be accepted: ${msg}`);
-        });
+        }
         return;
     }
     
     if (offer.isOneSided()) {
         if (offer.isGiftOffer() && Config.get("acceptGifts")) {
             offer.log("info", `is a gift offer asking for nothing in return, will accept`);
-            offer.accept().then((status) => {
+            try {
+                const status = await offer.accept();
                 offer.log("trade", `(gift offer) successfully accepted${status === 'pending' ? "; confirmation required" : ""}`);
                 log.debug("Gift offer: not sending confirmation to backpack.tf");
-            }).catch((msg) => {
+            } catch (msg) {
                 offer.log("warn", `(gift offer) couldn't be accepted: ${msg}`);
-            });
+            }
         } else {
             offer.log("info", "is a gift offer, skipping");
         }
@@ -72,16 +83,19 @@ function handleOffer(tradeoffer) {
     }
 
     offer.log("debug", `handling buy orders`);
-    let ok = backpack.handleBuyOrdersFor(offer);
+    let ok = await backpack.handleBuyOrdersFor(offer);
 
     if (ok === false) return;
     offer.log("debug", `handling sell orders`);
-    backpack.handleSellOrdersFor(offer).then((ok) => {
-        if (ok) {
+    try {
+        const sellOk = await backpack.handleSellOrdersFor(offer);
+        if (sellOk) {
             offer.log("debug", `finalizing offer`);
-            backpack.finalizeOffer(offer);
+            await backpack.finalizeOffer(offer);
         }
-    }).catch(er => console.log('custom error in tradejs', er));
+    } catch (er) {
+        log.error('Custom error in tradejs:', er);
+    }
 }
 
 function offerStateChanged(tradeoffer, oldState) {
@@ -90,7 +104,10 @@ function offerStateChanged(tradeoffer, oldState) {
 
     if (offer.state() === TradeOfferManager.ETradeOfferState.InvalidItems) {
         offer.log("info", "is now invalid, declining");
-        offer.decline().then(() => offer.log("debug", "declined")).catch(() => offer.log("info", "(Offer was marked invalid after being accepted)"));
+        offer.decline().then(() => {
+            offer.log("debug", "declined");
+        }).catch(() => {
+            offer.log("info", "(Offer was marked invalid after being accepted)");
+        });
     }
 }
-

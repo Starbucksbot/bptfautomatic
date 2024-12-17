@@ -1,6 +1,9 @@
-const fs = require('fs');
+const fs = require('fs/promises');
+const path = require('path');
+
 const CONFIG_FILENAME = 'config.json';
 const ACCOUNTS_FILENAME = 'accounts.json';
+
 const defaultConfig = {
     "dateFormat": "HH:mm:ss",
     "acceptGifts": false,
@@ -29,54 +32,64 @@ const defaultConfig = {
 let config = {};
 let accounts = {};
 
-function parseJSON(file) {
+// Helper function to construct file paths
+function getFilePath(filename) {
+    return path.join(__dirname, filename);
+}
+
+async function parseJSON(file) {
     try {
-        return JSON.parse(fs.readFileSync(file));
+        const data = await fs.readFile(getFilePath(file), 'utf8');
+        return JSON.parse(data);
     } catch (e) {
+        console.error(`Error parsing ${file}: ${e.message}`);
         return e;
     }
 }
 
-function saveJSON(file, conf) {
-    fs.writeFileSync(file, JSON.stringify(conf, null, "    "));
+async function saveJSON(file, conf) {
+    try {
+        await fs.writeFile(getFilePath(file), JSON.stringify(conf, null, "    "));
+    } catch (e) {
+        console.error(`Error saving ${file}: ${e.message}`);
+    }
 }
 
 function get(val, def) {
     if (val) {
         return config[val] || def;
     }
-
     return config;
 }
 
 exports.get = get;
 
-exports.write = function(conf) {
+exports.write = async function(conf) {
     config = conf;
-    saveJSON(CONFIG_FILENAME, config);
+    await saveJSON(CONFIG_FILENAME, config);
 };
 
-exports.init = function () {
+exports.init = async function () {
     let msg = "";
     
-    if (fs.existsSync(CONFIG_FILENAME)) {
-        config = parseJSON(CONFIG_FILENAME);
+    if (await fs.access(getFilePath(CONFIG_FILENAME)).then(() => true).catch(() => false)) {
+        config = await parseJSON(CONFIG_FILENAME);
         if (typeof config === "string") {
-            msg = "Cannot load " + CONFIG_FILENAME + ". " + config.toString() + ". Using default config.";
+            msg = `Cannot load ${CONFIG_FILENAME}. ${config.toString()}. Using default config.`;
             config = defaultConfig;
         } else {
             delete config.acceptedKeys;
             delete config.acceptOverpay;
         }
     } else {
-        exports.write(defaultConfig);
+        await exports.write(defaultConfig);
         msg = "Config generated.";
     }
 
-    if (fs.existsSync(ACCOUNTS_FILENAME)) {
-        accounts = parseJSON(ACCOUNTS_FILENAME);
+    if (await fs.access(getFilePath(ACCOUNTS_FILENAME)).then(() => true).catch(() => false)) {
+        accounts = await parseJSON(ACCOUNTS_FILENAME);
         if (typeof accounts === "string") {
-            msg += " Cannot load " + ACCOUNTS_FILENAME + ". " + accounts.toString() + ". No saved account details are available.";
+            msg += ` Cannot load ${ACCOUNTS_FILENAME}. ${accounts.toString()}. No saved account details are available.`;
             accounts = {};
         }
     } else if (config.steam) {
@@ -101,8 +114,8 @@ exports.init = function () {
 
         delete config.steam;
         delete config.tokens;
-        exports.write(config);
-        saveJSON(ACCOUNTS_FILENAME, accounts);
+        await exports.write(config);
+        await saveJSON(ACCOUNTS_FILENAME, accounts);
         msg += " Initialized new account storage.";
     }
     
@@ -113,11 +126,10 @@ function getAccount(id) {
     if (id === undefined) {
         return accounts[lastAccount()];
     }
-
     return accounts[id];
 }
 
-function saveAccount(name, details) {
+async function saveAccount(name, details) {
     if (arguments.length === 1) {
         details = name;
         name = lastAccount();
@@ -125,7 +137,7 @@ function saveAccount(name, details) {
 
     accounts[name] = details;
     accounts.lastUsedAccount = name;
-    saveJSON(ACCOUNTS_FILENAME, accounts);
+    await saveJSON(ACCOUNTS_FILENAME, accounts);
 }
 
 function setLastUsed(name) {

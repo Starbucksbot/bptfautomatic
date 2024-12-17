@@ -12,11 +12,8 @@ try {
 }
 
 const Utils = require('./utils');
-const vers = (require('../package.json') || {version: "(unknown)", beta: ""});
-let version = vers.version;
-if (vers.beta && vers.beta !== version) {
-    version = vers.beta + " beta-" + vers.betav;
-}
+const vers = require('../package.json') || {version: "(unknown)", beta: ""};
+const version = vers.version + (vers.beta && vers.beta !== vers.version ? ` beta-${vers.betav}` : '');
 
 const Config = require('./config');
 const logging = require('./logging');
@@ -26,7 +23,7 @@ const backpack = require('./backpacktf');
 
 let configlog = Config.init();
 
-let Automatic = {
+const Automatic = {
     version,
     getOwnSteamID() {
         return Automatic.steam.steamID.getSteamID64();
@@ -40,7 +37,9 @@ let Automatic = {
     confirmationsMode() {
         return Automatic.config.get().confirmations || "all";
     },
-    inverseCurrency(from) { return from === "metal" ? "keys" : "metal"; },
+    inverseCurrency(from) { 
+        return from === "metal" ? "keys" : "metal"; 
+    },
     currencyAvg(cur) {
         let c = Automatic.currencies[cur];
         return c ? (c.low + c.high) / 2 : 0;
@@ -48,10 +47,7 @@ let Automatic = {
     mayExchangeToCurrency(to) {
         const config = Automatic.config.get();
         if (typeof config.currencyExchange !== "object") return false;
-        if (config.currencyExchange[Automatic.inverseCurrency(to) + "->" + to] === true) {
-            return true;
-        }
-        return false;
+        return config.currencyExchange[`${Automatic.inverseCurrency(to)}->${to}`] === true;
     },
     keyPrice: null, 
     currencies: {},
@@ -63,14 +59,23 @@ Automatic.config = Config;
 Automatic.steam = new SteamCommunity();
 Automatic.steam.username = null;
 Automatic.manager = new TradeOfferManager({
-    "language": "en",
+    language: "en",
     community: Automatic.steam,
-    "domain": "backpack.tf",
-    "pollInterval": 10500
+    domain: "backpack.tf",
+    pollInterval: 10500
 });
-let log = Automatic.log = new Winston.Logger({
-    "levels": logging.LOG_LEVELS,
-    "colors": logging.LOG_COLORS
+
+// Create Winston logger with custom levels and colors
+const logger = Automatic.log = Winston.createLogger({
+    levels: logging.LOG_LEVELS,
+    format: Winston.format.combine(
+        Winston.format.timestamp(),
+        Winston.format.colorize(),
+        Winston.format.printf(info => `${info.timestamp} [${info.level}]: ${info.message}`)
+    ),
+    transports: [
+        new Winston.transports.Console()
+    ]
 });
 
 function register(...args) {
@@ -78,7 +83,9 @@ function register(...args) {
         if (typeof component === 'string') {
             component = require('./' + component);
         }
-        component.register(Automatic);
+        if (typeof component.register === 'function') {
+            component.register(Automatic);
+        }
     });
 }
 
@@ -87,33 +94,31 @@ register(
     trade,
     backpack,
     steam,
-    // use strings as confirmations requires AutomaticOffer, which returns a ref to exports, but the module's exports are overriden
-    // with a new ref to class AutomaticOffer (so it's {} inside confirmations)
     'automatic-offer',
     'confirmations'
 );
 
-if (configlog) log.info(configlog);
-log.info("backpack.tf Automatic v%s starting", version);
+if (configlog) logger.info(configlog);
+logger.info("backpack.tf Automatic v%s starting", version);
 if (vers.beta) {
-    log.warn("This is a beta version, functionality might be incomplete and/or broken. Release versions can be found here:");
+    logger.warn("This is a beta version, functionality might be incomplete and/or broken. Release versions can be found here:");
 
-    log.warn("In case you are running this build to test (or because it fixes a particular bug you have with older versions), you can report issues here:");
+    logger.warn("In case you are running this build to test (or because it fixes a particular bug you have with older versions), you can report issues here:");
 
 }
 
-process.nextTick(steam.connect);
+process.nextTick(() => steam.connect());
 
 // Check if we're up to date
-
+// Note: This functionality is not implemented in the provided code. Add here if needed.
 
 process.on('uncaughtException', (err) => {
-    log.error([
+    logger.error([
         "backpack.tf Automatic crashed! Please create an issue with the following log:",
         `crash: Automatic.version: ${Automatic.version}; node: ${process.version} ${process.platform} ${process.arch}; Contact: ${Automatic.getOwnSteamID()}`,
         `crash: Stack trace::`,
         require('util').inspect(err)
-    ].join('\r\n'));
-    log.error("Create an issue here: https://bitbucket.org/jessecar/backpack.tf-automatic/issues/new");
+    ].join('\n'));
+    logger.error("Create an issue here: https://bitbucket.org/jessecar/backpack.tf-automatic/issues/new");
     process.exit(1);
-})
+});

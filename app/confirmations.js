@@ -1,5 +1,5 @@
 const SteamTotp = require('steam-totp');
-const ConfirmationType = require('steamcommunity').ConfirmationType;
+const { ConfirmationType } = require('steamcommunity');
 const CONFIRMATION_POLL_INTERVAL = 10000;
 
 let automatic, steam, AutomaticOffer;
@@ -9,7 +9,7 @@ let offerids = {};
 let identity_secret = "";
 
 function cm() { return automatic.confirmationsMode(); }
-function timenow() { return Math.floor(Date.now() / 1000);}
+function timenow() { return Math.floor(Date.now() / 1000); }
 function totpKey(secret, tag) {
     return SteamTotp.getConfirmationKey(secret, timenow(), tag);
 }
@@ -18,17 +18,15 @@ exports.enabled = () => {
     return cm() !== "none";
 };
 
-const accept = exports.accept = (confirmation, secret) => {
-
-    let cid = "#" + confirmation.id;
+const accept = exports.accept = async (confirmation, secret) => {
+    const cid = "#" + confirmation.id;
     automatic.log.verbose(`Accepting confirmation ${cid}`);
     
-    const time = Math.floor(Date.now() / 1000);
-    confirmation.respond(time, totpKey(secret, "allow"), true, (err) => {
-        if (err) {
-            return automatic.log.error(`Error accepting confirmatin ${cid}.`);
-        }
-
+    try {
+        const time = timenow();
+        const key = totpKey(secret, "allow");
+        
+        await confirmation.respond(time, key, true);
         let creator = confirmation.creator;
         let message = `Confirmation ${cid} accepted`;
         let handledByAutomatic = confirmation.type === ConfirmationType.Trade && offerids[creator];
@@ -39,30 +37,37 @@ const accept = exports.accept = (confirmation, secret) => {
         }
         
         automatic.log.verbose(message + ".");
-    });
+    } catch (err) {
+        automatic.log.error(`Error accepting confirmation ${cid}: ${err.message}`);
+    }
 };
 
-
 exports.enable = () => {
-    if (enabled) return;
-    if (!exports.enabled()) return;
+    if (enabled || !exports.enabled()) return;
 
     enabled = true;
 
     steam.on('confKeyNeeded', (tag, callback) => {
-        callback(null, timenow(), totpKey(identity_secret, tag));
+        try {
+            const time = timenow();
+            const key = totpKey(identity_secret, tag);
+            callback(null, time, key);
+        } catch (err) {
+            callback(err);
+        }
     });
-    steam.on('newConfirmation', (confirmation) => {
-        let mode = cm();
+
+    steam.on('newConfirmation', async (confirmation) => {
+        const mode = cm();
         if (mode === "all") {
-            accept(confirmation, identity_secret);
+            await accept(confirmation, identity_secret);
         } else if (mode === "own") {
             if (offerids[confirmation.creator]) {
-                accept(confirmation, identity_secret);
+                await accept(confirmation, identity_secret);
             }
         } else if (mode === "own+market") {
             if (offerids[confirmation.creator] || confirmation.type === ConfirmationType.MarketListing) {
-                accept(confirmation, identity_secret);
+                await accept(confirmation, identity_secret);
             }
         } // ignore for "none"
     });
@@ -74,12 +79,13 @@ exports.setSecret = (secret) => {
     offerids = {};
     identity_secret = secret;
     exports.enable();
-}
-
+};
 
 exports.check = () => {
     if (!enabled) return;
-   // steam.checkConfirmations();
+    // Note: 'checkConfirmations' might not exist or be necessary in newer versions of steamcommunity
+    // If it's still needed, you would use:
+    // steam.checkConfirmations().catch(err => automatic.log.error(err.message));
 };
 
 exports.addOffer = (id) => {

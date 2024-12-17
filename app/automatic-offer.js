@@ -3,19 +3,17 @@ const Confirmations = require('./confirmations');
 const Utils = require('./utils');
 let Automatic;
 
-//const KillstreakNames = ["", "Killstreak", "Specialized Killstreak", "Professional Killstreak"];
-
 class AutomaticOffer {
-    constructor(offer, opts={}) {
+    constructor(offer, opts = {}) {
         this.tradeoffer = offer;
         this.tid = offer.id;
 
         // Original offer
-        this.exchange = {ours: offer.itemsToGive, theirs: offer.itemsToReceive};
+        this.exchange = { ours: offer.itemsToGive, theirs: offer.itemsToReceive };
         // Items to be handled
-        this.items = {ours: [], theirs: []};
+        this.items = { ours: [], theirs: [] };
         // Offer values
-        this.currencies = {ours: {keys: 0, metal: 0}, theirs: {keys: 0, metal: 0}};
+        this.currencies = { ours: { keys: 0, metal: 0 }, theirs: { keys: 0, metal: 0 } };
         this.bought = [];
 
         this.games = [];
@@ -32,10 +30,8 @@ class AutomaticOffer {
         return msg;
     }
 
-    // don't use app_data as sometimes it is missing
     static isKey(item) {
-        return (item.market_hash_name || item.market_name) === "Mann Co." +
-            " Supply Crate Key" && this.isUnique(item);
+        return (item.market_hash_name || item.market_name) === "Mann Co. Supply Crate Key" && this.isUnique(item);
     }
 
     static isUnique(item) {
@@ -43,20 +39,16 @@ class AutomaticOffer {
     }
 
     static getMetalValue(item) {
-        if (AutomaticOffer.isCraftWeapon(item)) {
-            return 1/18;
+        if (this.isCraftWeapon(item)) {
+            return 1 / 18;
         }
 
-        switch ((item.market_hash_name || item.market_name)) {
-            case "Scrap Metal":
-                return 1/9;
-            case "Reclaimed Metal":
-                return 1/3;
-            case "Refined Metal":
-                return 1;
+        switch (item.market_hash_name || item.market_name) {
+            case "Scrap Metal": return 1 / 9;
+            case "Reclaimed Metal": return 1 / 3;
+            case "Refined Metal": return 1;
+            default: return 0;
         }
-
-        return 0;
     }
 
     static isMetal(item) {
@@ -65,139 +57,70 @@ class AutomaticOffer {
     }
 
     static isCraftWeapon(item) {
-        // craft weapons aren't marketable
-        if (item.marketable) {
-            return false;
-        }
-
-        const isUnique = this.isUnique(item);
-        if (!isUnique) {
-            return false;
-        }
+        if (item.marketable) return false;
+        if (!this.isUnique(item)) return false;
 
         const type = item.getTag('Type');
-        if (!type) {
-            return false;
-        }
+        if (!type || typeof type.name !== 'string') return false;
+        
+        if (item.market_hash_name.match(/(Class|Slot) Token/)) return false;
+        if (!this.itemIsUncraftable(item)) return false;
 
-        if (typeof type.name !== 'string') {
-            return false;
-        }
-
-        if (item.market_hash_name.match(/(Class|Slot) Token/)) {
-            return false;
-        }
-
-        if (!AutomaticOffer.itemIsUncraftable(item)) {
-            return false;
-        }
-
-        return ['primary weapon', 'secondary weapon', 'melee weapon', 'primary pda', 'secondary pda'].indexOf(type.name.toLowerCase()) != -1;
+        return ['primary weapon', 'secondary weapon', 'melee weapon', 'primary pda', 'secondary pda'].includes(type.name.toLowerCase());
     }
 
-    // an item class wrapper for this stuff would be nice but this is simpler
-    // todo?
     static itemHasDescription(item, desc) {
-        const descriptions = item.descriptions;
-        if (!descriptions) return false;
-
-        return descriptions.some((d) => {
-            return d.value === desc;
-        });
+        return item.descriptions && item.descriptions.some(d => d.value === desc);
     }
-    
-    static itemHasDescriptionStartingWith(item, desc) {
-        const descriptions = item.descriptions;
-        if (!descriptions) return false;
 
-        return descriptions.some((d) => {
-            return d.value.slice(0, desc.length) === desc;
-        });
+    static itemHasDescriptionStartingWith(item, desc) {
+        return item.descriptions && item.descriptions.some(d => d.value.startsWith(desc));
     }
 
     static itemKillstreakTier(item) {
-        if (AutomaticOffer.itemHasDescriptionStartingWith(item, "Killstreaker:")) {
-            return 3;
-        } else if (AutomaticOffer.itemHasDescriptionStartingWith(item, "Sheen:")) {
-            return 2;
-        } else if (AutomaticOffer.itemHasDescription(item, "Killstreaks Active")) {
-            return 1;
-        }
-
+        if (this.itemHasDescriptionStartingWith(item, "Killstreaker:")) return 3;
+        if (this.itemHasDescriptionStartingWith(item, "Sheen:")) return 2;
+        if (this.itemHasDescription(item, "Killstreaks Active")) return 1;
         return 0;
     }
- 
+
     static itemKillstreakNames(item) {
-    
-        if (AutomaticOffer.itemKillstreakTier(item) === 3) {
-            return " Professional Killstreak"; 
-            } else if (AutomaticOffer.itemKillstreakTier(item) === 2) {
-            return " Specialized Killstreak"; 
-             } else if (AutomaticOffer.itemKillstreakTier(item) === 1) {
-            return " Killstreak"; 
-             } else if (AutomaticOffer.itemKillstreakTier(item) === 0) {
-            return ""; 
+        switch (this.itemKillstreakTier(item)) {
+            case 3: return " Professional Killstreak";
+            case 2: return " Specialized Killstreak";
+            case 1: return " Killstreak";
+            default: return "";
         }
     }
 
     static itemAustralium(item) {
-
         const name = item.market_hash_name;
-        const AuNames = name.substr(name.indexOf("Australium") + 11) || 0;
-
-        if (name === "Strange" + AutomaticOffer.itemKillstreakNames(item) + 
-        " Australium " + AuNames) {
-            return 1;
-        } else if (name === "Strange Festivized" + AutomaticOffer.itemKillstreakNames(item) + 
-            " Australium " + AuNames) {
-            return 1;
-        } 
-        return 0;
+        const AuNames = name.substr(name.indexOf("Australium") + 11) || "";
+        
+        return name.startsWith("Strange") && name.includes("Australium") ? 1 : 0;
     }
-     
-    
+
     static StrangeSkin(item) {
-        let name = item.market_hash_name;
-        var str = name
-        var result = str.match( /Field-Tested/i ) || str.match( /Factory New/i ) || 
-        str.match( /Minimal Wear/i ) || str.match( /Well-Worn/i ) || str.match( /Battle Scarred/i ) || 0;
-        let skin = result.index;
-        if (skin > 0) {
-           skin = 15;
-    }  return skin;
-}
+        const name = item.market_hash_name;
+        const conditions = ["Field-Tested", "Factory New", "Minimal Wear", "Well-Worn", "Battle Scarred"];
+        return conditions.some(cond => name.includes(cond)) ? 15 : 0;
+    }
 
     static itemIsUncraftable(item) {
-        return AutomaticOffer.itemHasDescription(item, "( Not Usable in Crafting )");
+        return this.itemHasDescription(item, "( Not Usable in Crafting )");
     }
 
     static itemParticleEffect(item) {
-        const desc = item.descriptions;
-        let particle = "";
-
-        for (let i = 0; i < desc.length; i += 1) {
-            let value = desc[i].value;
-            if (value[0] === "\u2605") { // Unusual star in inv
-                particle = value.substr(18); // Remove "★ Unusual Effect: "
-                break;
-            }
-        }
-
-        return particle;
+        if (!item.descriptions) return "";
+        const particleDesc = item.descriptions.find(d => d.value.startsWith("★ Unusual Effect: "));
+        return particleDesc ? particleDesc.value.slice(18) : "";
     }
 
     static toBackpackName(item) {
         let name = item.market_hash_name;
-        let particle = AutomaticOffer.itemParticleEffect(item);
-
-        if (particle) {
-            name = particle + " " + name.substr(name.indexOf(" ") + 1); // Remove "Unusual"
-        }
-
-        if (AutomaticOffer.itemIsUncraftable(item)) {
-            name = "Non-Craftable " + name;
-        }
-
+        let particle = this.itemParticleEffect(item);
+        if (particle) name = particle + " " + name.substr(name.indexOf(" ") + 1); // Remove "Unusual"
+        if (this.itemIsUncraftable(item)) name = "Non-Craftable " + name;
         return name;
     }
 
@@ -207,51 +130,36 @@ class AutomaticOffer {
     }
 
     summarizeItems(items) {
-        let names = {};
-        
-        items.forEach((item) => {
+        const names = {};
+        items.forEach(item => {
             let name = AutomaticOffer.toBackpackName(item);
             names[name] = (names[name] || 0) + 1;
         });
 
-        let formattedNames = [];
-        for (let name in names) {
-            formattedNames.push(name + (names[name] > 1 ? " x" + names[name] : ""));
-        }
-
-        return formattedNames.join(', ');
+        return Object.entries(names).map(([name, count]) => `${name}${count > 1 ? ` x${count}` : ""}`).join(', ');
     }
+
     summarizeCurrency(currencies) {
-        let message = "";
-
-        for (let currency in currencies) {
-            let amount = currencies[currency];
-
-            if (amount !== 0) {
-                let formatted = amount.toFixed(3);
-                formatted = +formatted.substr(0, formatted.length - 1); // essentially toFixed(2) without rounding; + removes trailing zeroes
-
-                message += `${formatted} ${currency === "metal" ? "ref" : (formatted === 1 ? "key" : "keys")} `;
-            }
-        }
-
-        return message;
+        return Object.entries(currencies)
+            .filter(([_, amount]) => amount !== 0)
+            .map(([currency, amount]) => {
+                let formatted = amount.toFixed(2);
+                return `${formatted} ${currency === "metal" ? "ref" : (formatted === "1.00" ? "key" : "keys")}`;
+            }).join(" ");
     }
-    summary(opts={}) {
-        let message = `Asked: ${this.summarizeCurrency(this.currencies.ours)} (${this.summarizeItems(this.exchange.ours)})
-Offered: ${this.summarizeCurrency(this.currencies.theirs)} (${this.summarizeItems(this.exchange.theirs)})`;
+
+    summary(opts = {}) {
+        let message = `Asked: ${this.summarizeCurrency(this.currencies.ours)} (${this.summarizeItems(this.exchange.ours)})\nOffered: ${this.summarizeCurrency(this.currencies.theirs)} (${this.summarizeItems(this.exchange.theirs)})`;
 
         if (opts.includeBuyOrders && this.bought.length) {
-            message += `\r\nBought items (${this.bought.length}): ${this.summarizeItems(this.bought.map(index => this.exchange.theirs[index]))}`;
+            message += `\nBought items (${this.bought.length}): ${this.summarizeItems(this.bought.map(index => this.exchange.theirs[index]))}`;
         }
 
         return message;
     }
 
     _countCurrencies(items, cur, includeWeapons) {
-        for (let i = 0; i < items.length; i += 1) {
-            let item = items[i];
-
+        for (const item of items) {
             if (this.games.indexOf(item.appid) === -1) {
                 this.games.push(item.appid);
             }
@@ -259,7 +167,7 @@ Offered: ${this.summarizeCurrency(this.currencies.theirs)} (${this.summarizeItem
             if (AutomaticOffer.isKey(item)) {
                 cur.keys += 1;
             } else {
-                const metalValue = includeWeapons ? AutomaticOffer.getMetalValue(item) : (AutomaticOffer.isMetal(item) ? AutomaticOffer.getMetalValue(item) : 0);
+                let metalValue = includeWeapons ? AutomaticOffer.getMetalValue(item) : (AutomaticOffer.isMetal(item) ? AutomaticOffer.getMetalValue(item) : 0);
                 if (metalValue > 0) {
                     cur.metal += metalValue;
                 }
@@ -278,14 +186,16 @@ Offered: ${this.summarizeCurrency(this.currencies.theirs)} (${this.summarizeItem
                 if (err) {
                     reject(AutomaticOffer.getOfferError(err));
                 } else {
-                    //Confirmations.addOffer(this.tid);
-                    //Confirmations.check();
-                    //Confirmations.accept_that_offer(this.tid);
+                    // Note: Confirmation handling might be implemented differently based on your setup
+                    // Confirmations.addOffer(this.tid);
+                    // Confirmations.check();
+                    // Confirmations.accept_that_offer(this.tid);
                     resolve(status);
                 }
             });
         });
     }
+
     decline() {
         return new Promise((resolve, reject) => {
             this.tradeoffer.decline((err, status) => {
@@ -301,49 +211,67 @@ Offered: ${this.summarizeCurrency(this.currencies.theirs)} (${this.summarizeItem
     determineEscrowDays() {
         return new Promise((resolve, reject) => {
             this.tradeoffer.getUserDetails((err, my, them) => {
-                if (err) {
-                    return reject(err);
+                if (err) reject(err);
+                else {
+                    let escrowDays = 0;
+                    if (this.exchange.theirs.length > 0 && them.escrowDays > escrowDays) escrowDays = them.escrowDays;
+                    if (this.exchange.ours.length > 0 && my.escrowDays > escrowDays) escrowDays = my.escrowDays;
+                    resolve(escrowDays);
                 }
-
-                const myDays = my.escrowDays;
-                const theirDays = them.escrowDays;
-                const items = this.exchange;
-                let escrowDays = 0;
-
-                if (items.theirs.length > 0 && theirDays > escrowDays) {
-                    escrowDays = theirDays;
-                }
-
-                if (items.ours.length > 0 && myDays > escrowDays) {
-                    escrowDays = myDays;
-                }
-
-                resolve(escrowDays);
             });
         });
     }
 
-    static fmtid(tid) { return (+tid).toString(36).toUpperCase(); }
-    partner64() { return this.tradeoffer.partner.toString(); }
-    partner3() { return this.tradeoffer.partner.getSteam3RenderedID(); }
-    offerid() { return AutomaticOffer.fmtid(this.tid); }
-    state() { return this.tradeoffer.state; }
-    stateName() { return TradeOfferManager.ETradeOfferState[this.state()]; }
-    isGlitched() { return this.tradeoffer.isGlitched(); }
-    isOneSided() { return this.exchange.ours.length === 0 || this.exchange.theirs.length === 0; }
-    isGiftOffer() { return this.exchange.ours.length === 0 && this.exchange.theirs.length > 0; }
-    log(level, msg) { Automatic.log[level](`${this.partner3()} Offer ${this.offerid()} ${msg}`); }
+    static fmtid(tid) { 
+        return (+tid).toString(36).toUpperCase(); 
+    }
+
+    partner64() {
+        return this.tradeoffer.partner.toString();
+    }
+
+    partner3() {
+        return this.tradeoffer.partner.getSteam3RenderedID();
+    }
+
+    offerid() {
+        return AutomaticOffer.fmtid(this.tid);
+    }
+
+    state() {
+        return this.tradeoffer.state;
+    }
+
+    stateName() {
+        return TradeOfferManager.ETradeOfferState[this.state()];
+    }
+
+    isGlitched() {
+        return this.tradeoffer.isGlitched();
+    }
+
+    isOneSided() {
+        return this.exchange.ours.length === 0 || this.exchange.theirs.length === 0;
+    }
+
+    isGiftOffer() {
+        return this.exchange.ours.length === 0 && this.exchange.theirs.length > 0;
+    }
+
+    log(level, msg) {
+        Automatic.log[level](`${this.partner3()} Offer ${this.offerid()} ${msg}`);
+    }
 
     logDetails(level) {
-         this.log(level, `Offer details:\r\n${this.summary({includeBuyOrders: false})}`);
+        this.log(level, `Offer details:\n${this.summary({ includeBuyOrders: false })}`);
     }
 
     fromOwner() {
-        let owners = (Automatic.config.get().owners || []);
-        return owners.indexOf(this.partner64()) !== -1;
+        const owners = Automatic.config.get().owners || [];
+        return owners.includes(this.partner64());
     }
 
-    abandon(opts={}) {
+    abandon(opts = {}) {
         if (opts.recheck) {
             this.log("warn", "Some items are missing app_data (Steam is having issues). Offer will be rechecked in 15 seconds.");
             return Utils.after.seconds(15).then(() => {
