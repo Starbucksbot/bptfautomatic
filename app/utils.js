@@ -1,106 +1,84 @@
-import { writeFile, readFile, access } from 'fs/promises';
-import { constants } from 'fs';
-import TradeOfferManager from 'steam-tradeoffer-manager';
-import backpack from './backpacktf.js';
-import AutomaticOffer from './automatic-offer.js';
+const axios = require('axios');
+const querystring = require('querystring');
+const Prompt = require('prompt');
+require('colors');
 
-const POLLDATA_FILENAME = 'polldata.json';
+// Set up prompt
+Prompt.message = Prompt.delimiter = "";
 
-let manager, log, Config;
+exports.getJSON = function (opts) {
+    let o = {};
 
-// Register function to initialize the module
-export const register = async (Automatic) => {
-    log = Automatic.log;
-    manager = Automatic.manager;
-    Config = Automatic.config;
-
-    try {
-        await access(POLLDATA_FILENAME, constants.F_OK);
-        const data = await readFile(POLLDATA_FILENAME, 'utf-8');
-        manager.pollData = JSON.parse(data);
-    } catch (err) {
-        log.verbose(`Unable to load ${POLLDATA_FILENAME}: ${err.message}. Starting fresh.`);
+    if (opts.qs) {
+        o.params = opts.qs;
     }
 
-    manager.on('pollData', savePollData);
-    manager.on('newOffer', handleOffer);
-    manager.on('receivedOfferChanged', offerStateChanged);
-};
-
-// Save poll data asynchronously
-const savePollData = async (pollData) => {
-    try {
-        await writeFile(POLLDATA_FILENAME, JSON.stringify(pollData, null, 2));
-        log.debug("Poll data successfully saved.");
-    } catch (err) {
-        log.warn(`Error writing poll data: ${err.message}`);
-    }
-};
-
-// Handle new trade offers
-const handleOffer = (tradeoffer) => {
-    const offer = new AutomaticOffer(tradeoffer);
-
-    if (offer.isGlitched()) {
-        offer.log("warn", `Received from ${offer.partner64()} is glitched (Steam might be down).`);
-        return;
-    }
-
-    offer.log("info", `Received from ${offer.partner64()}`);
-
-    // Handle owner offers
-    if (offer.fromOwner()) {
-        offer.log("info", "Offer is from owner, accepting.");
-        offer.accept()
-            .then(status => offer.log("trade", `Successfully accepted${status === 'pending' ? "; confirmation required" : ""}`))
-            .catch(msg => offer.log("warn", `Couldn't accept owner offer: ${msg}`));
-        return;
-    }
-
-    // Handle one-sided gift offers
-    if (offer.isOneSided()) {
-        if (offer.isGiftOffer() && Config.get("acceptGifts")) {
-            offer.log("info", "Gift offer detected, accepting.");
-            offer.accept()
-                .then(status => offer.log("trade", `Gift offer successfully accepted${status === 'pending' ? "; confirmation required" : ""}`))
-                .catch(msg => offer.log("warn", `Couldn't accept gift offer: ${msg}`));
-        } else {
-            offer.log("info", "Gift offer detected, skipping.");
+    return axios.get(opts.url, o).then((resp) => {
+        if (opts.checkResponse && !resp.data.response && !resp.data.response.success) {
+            throw resp;
         }
-        return;
-    }
-
-    // Skip offers with non-TF2 items
-    if (offer.games.length !== 1 || offer.games[0] !== 440) {
-        offer.log("info", "Offer contains non-TF2 items, skipping.");
-        return;
-    }
-
-    // Handle buy and sell orders
-    offer.log("debug", "Handling buy orders.");
-    const ok = backpack.handleBuyOrdersFor(offer);
-    if (ok === false) return;
-
-    offer.log("debug", "Handling sell orders.");
-    backpack.handleSellOrdersFor(offer)
-        .then(ok => {
-            if (ok) {
-                offer.log("debug", "Finalizing offer.");
-                backpack.finalizeOffer(offer);
-            }
-        })
-        .catch(err => log.error(`Error handling sell orders: ${err.message}`));
+        return [resp.data, resp.data.response];
+    }).catch((resp) => {
+        let r = resp.response || {};
+        throw [resp.message || ("HTTP error " + r.status), r.status, r.data];
+    });
 };
 
-// Handle changes in trade offer states
-const offerStateChanged = (tradeoffer, oldState) => {
-    const offer = new AutomaticOffer(tradeoffer, { countCurrency: false });
-    offer.log("verbose", `State changed: ${TradeOfferManager.ETradeOfferState[oldState]} -> ${offer.stateName()}`);
+exports.postJSON = function (opts, _json) {
+    let o = {};
 
-    if (offer.state() === TradeOfferManager.ETradeOfferState.InvalidItems) {
-        offer.log("info", "Offer is now invalid, declining.");
-        offer.decline()
-            .then(() => offer.log("debug", "Offer successfully declined."))
-            .catch(() => offer.log("info", "Offer was marked invalid after being accepted."));
+    if (_json === false) {
+        o.data = querystring.stringify(opts.form);
+    } else if (opts.form) o.data = opts.form;
+
+    return axios.get(opts.url, o).then((resp) => {
+        return [resp.data, resp.data.response];
+    }).catch((resp) => {
+        let r = resp.response || {};
+        throw [resp.message || ("HTTP error " + r.status), r.status, r.data];
+    });
+};
+
+exports.postJSON2 = function (opts, _json) {
+    let o = {};
+
+    if (_json === false) {
+        o.data = querystring.stringify(opts.form);
+    } else if (opts.form) o.data = opts.form;
+
+    return axios.post(opts.url, o.data).then((resp) => {
+        return [resp.data, resp.data.response, resp.status];
+    }).catch((resp) => {
+        let r = resp.response || {};
+        throw [resp.message || ("HTTP error " + r.status), r.status, r.data];
+    });
+};
+
+exports.postForm = (opts) => exports.postJSON(opts, false);
+
+exports.prompt = (props) => {
+    return new Promise((resolve, reject) => {
+        Prompt.start();
+        Prompt.get({properties: props}, (err, result) => {
+            if (err) reject(err);
+            else resolve(result);
+        });
+    });
+};
+
+exports.fatal = (log, msg) => {
+    log.error(msg);
+    process.exit(1);
+};
+
+exports.after = {
+    timeout(time) {
+        return new Promise(resolve => setTimeout(resolve, time));
+    },
+    seconds(s) {
+        return this.timeout(1000 * s);
+    },
+    minutes(m) {
+        return this.timeout(1000 * 60 * m);
     }
 };

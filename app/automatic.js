@@ -1,91 +1,119 @@
-import fs from 'fs/promises';
-import { createLogger, format, transports } from 'winston';
-import SteamCommunity from 'steamcommunity';
-import TradeOfferManager from 'steam-tradeoffer-manager';
-
-// Dynamic imports for modules
-let logging, Config, trade, steam, backpack, Utils;
+let SteamCommunity;
+let TradeOfferManager;
+let Winston;
 
 try {
-    logging = (await import('./logging.js')).default;
-    Config = (await import('./config.js')).default;
-    trade = (await import('./trade.js')).default;
-    steam = (await import('./steamclient.js')).default;
-    backpack = (await import('./backpacktf.js')).default;
-    Utils = (await import('./utils.js')).default;
+    SteamCommunity = require('steamcommunity');
+    TradeOfferManager = require('steam-tradeoffer-manager');
+    Winston = require('winston');
 } catch (ex) {
-    console.error("Missing dependencies. Install via npm install or check the installation.", ex);
+    console.error("Missing dependencies. Install a version with dependencies (not 'download repository') or use npm install.");
     process.exit(1);
 }
 
-// Load version from package.json
-let version = "1.1.0";
-try {
-    const packageData = JSON.parse(await fs.readFile('../package.json', 'utf-8'));
-    const vers = packageData.version || "(unknown)";
-    version = packageData.beta ? `${packageData.beta} beta-${packageData.betav}` : vers;
-} catch (err) {
-    console.error("Failed to load version data:", err.message);
+const Utils = require('./utils');
+const vers = (require('../package.json') || {version: "(unknown)", beta: ""});
+let version = vers.version;
+if (vers.beta && vers.beta !== version) {
+    version = vers.beta + " beta-" + vers.betav;
 }
 
-const Automatic = {
+const Config = require('./config');
+const logging = require('./logging');
+const trade = require('./trade');
+const steam = require('./steamclient');
+const backpack = require('./backpacktf');
+
+let configlog = Config.init();
+
+let Automatic = {
     version,
-    steam: new SteamCommunity(),
-    manager: null,
-    config: Config,
-    currencies: {},
-    keyPrice: null,
-    buyOrders: [],
-    buyOrdersEtag: "",
     getOwnSteamID() {
-        return this.steam.steamID.getSteamID64();
+        return Automatic.steam.steamID.getSteamID64();
     },
     apiPath(fn) {
-        return (this.config.get().backpackDomain || 'https://backpack.tf') + '/api/' + fn;
+        return (Automatic.config.get().backpackDomain || 'https://backpack.tf') + '/api/' + fn;
     },
-    inverseCurrency(from) {
-        return from === "metal" ? "keys" : "metal";
+    buyOrdersEnabled() {
+        return !!Automatic.config.get().buyOrders;
+    },
+    confirmationsMode() {
+        return Automatic.config.get().confirmations || "all";
+    },
+    inverseCurrency(from) { return from === "metal" ? "keys" : "metal"; },
+    currencyAvg(cur) {
+        let c = Automatic.currencies[cur];
+        return c ? (c.low + c.high) / 2 : 0;
     },
     mayExchangeToCurrency(to) {
-        const config = this.config.get();
-        return (
-            typeof config.currencyExchange === "object" &&
-            config.currencyExchange[this.inverseCurrency(to) + "->" + to] === true
-        );
-    }
+        const config = Automatic.config.get();
+        if (typeof config.currencyExchange !== "object") return false;
+        if (config.currencyExchange[Automatic.inverseCurrency(to) + "->" + to] === true) {
+            return true;
+        }
+        return false;
+    },
+    keyPrice: null, 
+    currencies: {},
+    buyOrders: [],
+    buyOrdersEtag: "",
 };
 
-// Initialize Winston logger
-const log = createLogger({
-    levels: logging.LOG_LEVELS,
-    format: format.combine(
-        format.colorize(),
-        format.timestamp(),
-        format.printf(({ level, message, timestamp }) => `[${timestamp}] ${level}: ${message}`)
-    ),
-    transports: [new transports.Console()]
-});
-
-// Set up Steam Offer Manager
+Automatic.config = Config;
+Automatic.steam = new SteamCommunity();
+Automatic.steam.username = null;
 Automatic.manager = new TradeOfferManager({
-    language: "en",
+    "language": "en",
     community: Automatic.steam,
-    domain: "backpack.tf",
-    pollInterval: 10500
+    "domain": "backpack.tf",
+    "pollInterval": 10500
+});
+let log = Automatic.log = new Winston.Logger({
+    "levels": logging.LOG_LEVELS,
+    "colors": logging.LOG_COLORS
 });
 
-// Register modules
-function register(...modules) {
-    modules.forEach(component => component.register(Automatic));
+function register(...args) {
+    args.forEach(component => {
+        if (typeof component === 'string') {
+            component = require('./' + component);
+        }
+        component.register(Automatic);
+    });
 }
 
-await register(logging, trade, backpack, steam, (await import('./automatic-offer.js')).default, (await import('./confirmations.js')).default);
+register(
+    logging,
+    trade,
+    backpack,
+    steam,
+    // use strings as confirmations requires AutomaticOffer, which returns a ref to exports, but the module's exports are overriden
+    // with a new ref to class AutomaticOffer (so it's {} inside confirmations)
+    'automatic-offer',
+    'confirmations'
+);
 
-// Start and handle uncaught exceptions
-log.info(`backpack.tf Automatic v${version} starting`);
-process.nextTick(() => steam.connect());
+if (configlog) log.info(configlog);
+log.info("backpack.tf Automatic v%s starting", version);
+if (vers.beta) {
+    log.warn("This is a beta version, functionality might be incomplete and/or broken. Release versions can be found here:");
 
-process.on('uncaughtException', err => {
-    log.error(`backpack.tf Automatic crashed!\nError: ${err.message}\nStack: ${err.stack}\nContact SteamID: ${Automatic.getOwnSteamID()}`);
+    log.warn("In case you are running this build to test (or because it fixes a particular bug you have with older versions), you can report issues here:");
+
+}
+
+process.nextTick(steam.connect);
+
+// Check if we're up to date
+
+
+process.on('uncaughtException', (err) => {
+    log.error([
+        "backpack.tf Automatic crashed! Please create an issue with the following log:",
+        `crash: Automatic.version: ${Automatic.version}; node: ${process.version} ${process.platform} ${process.arch}; Contact: ${Automatic.getOwnSteamID()}`,
+        `crash: Stack trace::`,
+        require('util').inspect(err)
+    ].join('\r\n'));
+    log.error("Create an issue here: https://bitbucket.org/jessecar/backpack.tf-automatic/issues/new");
     process.exit(1);
-});
+})
