@@ -348,8 +348,7 @@ function handleBuyOrdersFor(offer) {
     applyFilter(offer.items, 'ours', ours, oursignore);
     applyFilter(offer.items, 'theirs', theirs, theirsignore);
 }
-applyFilter(offer.items, 'ours', ours, oursignore);
-applyFilter(offer.items, 'theirs', theirs, theirsignore);
+
 
 function handleOther(offer, other) {
     if (other && (other.scammer || other.banned)) {
