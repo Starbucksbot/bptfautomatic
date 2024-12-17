@@ -13,101 +13,136 @@ exports.register = (Automatic) => {
     manager = Automatic.manager;
     Config = Automatic.config;
 
-    if (fs.existsSync(path.join(__dirname, POLLDATA_FILENAME))) {
-        fs.readFile(path.join(__dirname, POLLDATA_FILENAME), 'utf8')
-            .then(pollDataContent => {
-                try {
-                    manager.pollData = JSON.parse(pollDataContent);
-                } catch (e) {
-                    log.verbose("polldata.json is corrupt: ", e);
-                }
-            })
-            .catch(e => {
-                log.error("Error reading polldata.json: ", e);
-            });
-    }
+    loadPollData();
 
     manager.on('pollData', savePollData);
     manager.on('newOffer', handleOffer);
     manager.on('receivedOfferChanged', offerStateChanged);
 };
 
+/**
+ * Loads poll data from file if it exists.
+ */
+async function loadPollData() {
+    const pollDataPath = path.join(__dirname, POLLDATA_FILENAME);
+    try {
+        await fs.access(pollDataPath);
+        const pollDataContent = await fs.readFile(pollDataPath, 'utf8');
+        manager.pollData = JSON.parse(pollDataContent);
+    } catch (err) {
+        log.warn("Failed to load poll data:", err.message);
+    }
+}
+
+/**
+ * Saves the poll data to file.
+ * @param {Object} pollData - The poll data to save.
+ */
 async function savePollData(pollData) {
     try {
         await fs.writeFile(path.join(__dirname, POLLDATA_FILENAME), JSON.stringify(pollData));
+        log.debug("Poll data saved successfully.");
     } catch (err) {
         log.warn(`Error writing poll data: ${err.message}`);
     }
 }
 
+/**
+ * Handles incoming trade offers.
+ * @param {Object} tradeoffer - The trade offer object.
+ */
 async function handleOffer(tradeoffer) {
     const offer = new AutomaticOffer(tradeoffer);
-    if (offer.isGlitched()) {
-        offer.log("warn", `received from ${offer.partner64()} is glitched (Steam might be down).`);
-        return;
-    }
 
-    offer.log("info", `received from ${offer.partner64()}`);
-
-    if (offer.fromOwner()) {
-        offer.log("info", `is from owner, accepting`);
-        try {
-            const status = await offer.accept();
-            offer.log("trade", `successfully accepted${status === 'pending' ? "; confirmation required" : ""}`);
-            log.debug("Owner offer: not sending confirmation to backpack.tf");
-        } catch (msg) {
-            offer.log("warn", `(owner offer) couldn't be accepted: ${msg}`);
-        }
-        return;
-    }
-    
-    if (offer.isOneSided()) {
-        if (offer.isGiftOffer() && Config.get("acceptGifts")) {
-            offer.log("info", `is a gift offer asking for nothing in return, will accept`);
-            try {
-                const status = await offer.accept();
-                offer.log("trade", `(gift offer) successfully accepted${status === 'pending' ? "; confirmation required" : ""}`);
-                log.debug("Gift offer: not sending confirmation to backpack.tf");
-            } catch (msg) {
-                offer.log("warn", `(gift offer) couldn't be accepted: ${msg}`);
-            }
-        } else {
-            offer.log("info", "is a gift offer, skipping");
-        }
-        return;
-    }
-    
-    if (offer.games.length !== 1 || offer.games[0] !== 440) {
-        offer.log("info", `contains non-TF2 items, skipping`);
-        return;
-    }
-
-    offer.log("debug", `handling buy orders`);
-    let ok = await backpack.handleBuyOrdersFor(offer);
-
-    if (ok === false) return;
-    offer.log("debug", `handling sell orders`);
     try {
-        const sellOk = await backpack.handleSellOrdersFor(offer);
-        if (sellOk) {
-            offer.log("debug", `finalizing offer`);
-            await backpack.finalizeOffer(offer);
+        if (offer.isGlitched()) {
+            offer.log("warn", `Offer from ${offer.partner64()} is glitched (Steam might be down).`);
+            return;
         }
-    } catch (er) {
-        log.error('Custom error in tradejs:', er);
+
+        offer.log("info", `Offer received from ${offer.partner64()}.`);
+
+        if (offer.fromOwner()) {
+            await processOwnerOffer(offer);
+        } else if (offer.isOneSided()) {
+            await processOneSidedOffer(offer);
+        } else if (offer.games.length !== 1 || offer.games[0] !== 440) {
+            offer.log("info", `Offer contains non-TF2 items, skipping.`);
+        } else {
+            await processBackpackOrders(offer);
+        }
+    } catch (err) {
+        offer.log("error", `Failed to handle offer: ${err.message}`);
     }
 }
 
+/**
+ * Processes offers from the owner.
+ * @param {Object} offer - The trade offer object.
+ */
+async function processOwnerOffer(offer) {
+    try {
+        offer.log("info", "Offer is from owner, accepting.");
+        const status = await offer.accept();
+        offer.log("trade", `Successfully accepted (Owner offer)${status === 'pending' ? "; confirmation required" : ""}.`);
+        log.debug("Owner offer: no confirmation sent to backpack.tf.");
+    } catch (err) {
+        offer.log("warn", `Couldn't accept owner offer: ${err.message}`);
+    }
+}
+
+/**
+ * Processes one-sided offers (e.g., gifts).
+ * @param {Object} offer - The trade offer object.
+ */
+async function processOneSidedOffer(offer) {
+    if (offer.isGiftOffer() && Config.get("acceptGifts")) {
+        try {
+            offer.log("info", "Gift offer asking for nothing in return, accepting.");
+            const status = await offer.accept();
+            offer.log("trade", `Gift offer accepted${status === 'pending' ? "; confirmation required" : ""}.`);
+        } catch (err) {
+            offer.log("warn", `Couldn't accept gift offer: ${err.message}`);
+        }
+    } else {
+        offer.log("info", "Gift offer not accepted (either disabled or rejected).");
+    }
+}
+
+/**
+ * Processes backpack.tf buy/sell orders for an offer.
+ * @param {Object} offer - The trade offer object.
+ */
+async function processBackpackOrders(offer) {
+    try {
+        offer.log("debug", "Handling buy orders.");
+        const buyOk = await backpack.handleBuyOrdersFor(offer);
+        if (!buyOk) return;
+
+        offer.log("debug", "Handling sell orders.");
+        const sellOk = await backpack.handleSellOrdersFor(offer);
+        if (sellOk) {
+            offer.log("debug", "Finalizing offer.");
+            await backpack.finalizeOffer(offer);
+        }
+    } catch (err) {
+        offer.log("error", `Error processing backpack orders: ${err.message}`);
+    }
+}
+
+/**
+ * Handles changes in the state of received offers.
+ * @param {Object} tradeoffer - The trade offer object.
+ * @param {number} oldState - The previous state of the offer.
+ */
 function offerStateChanged(tradeoffer, oldState) {
-    const offer = new AutomaticOffer(tradeoffer, {countCurrency: false});
-    offer.log("verbose", `state changed: ${TradeOfferManager.ETradeOfferState[oldState]} -> ${offer.stateName()}`);
+    const offer = new AutomaticOffer(tradeoffer, { countCurrency: false });
+    offer.log("verbose", `State changed: ${TradeOfferManager.ETradeOfferState[oldState]} -> ${offer.stateName()}.`);
 
     if (offer.state() === TradeOfferManager.ETradeOfferState.InvalidItems) {
-        offer.log("info", "is now invalid, declining");
-        offer.decline().then(() => {
-            offer.log("debug", "declined");
-        }).catch(() => {
-            offer.log("info", "(Offer was marked invalid after being accepted)");
-        });
+        offer.log("info", "Offer is now invalid, declining.");
+        offer.decline()
+            .then(() => offer.log("debug", "Offer declined."))
+            .catch(() => offer.log("info", "Offer was marked invalid after being accepted."));
     }
 }

@@ -6,25 +6,16 @@ const ACCOUNTS_FILENAME = 'accounts.json';
 
 const defaultConfig = {
     "dateFormat": "HH:mm:ss",
-    "acceptGifts": false,
+    "acceptGifts": true,
     "declineBanned": true,
     "acceptEscrow": false, // or: true, "decline"
-    "currencyExchange": {"metal->keys": false, "keys->metal": false},
+    "currencyExchange": { "metal->keys": false, "keys->metal": false },
     "buyOrders": true,
     "confirmations": "all", // or: "own", "own+market", "none"
     "logs": {
-        "console": {
-            "level": "verbose"
-        },
-        "file": {
-            "filename": "automatic.log",
-            "disabled": false,
-            "level": "info"
-        },
-        "trade": {
-            "filename": "automatic.trade.log",
-            "disabled": false
-        }
+        "console": { "level": "verbose" },
+        "file": { "filename": "automatic.log", "disabled": false, "level": "info" },
+        "trade": { "filename": "automatic.trade.log", "disabled": false }
     },
     "owners": ["<steamid64s>"]
 };
@@ -32,124 +23,137 @@ const defaultConfig = {
 let config = {};
 let accounts = {};
 
-// Helper function to construct file paths
+/**
+ * Constructs the full file path for a given filename.
+ * @param {string} filename - The name of the file.
+ * @returns {string} - The full file path.
+ */
 function getFilePath(filename) {
     return path.join(__dirname, filename);
 }
 
+/**
+ * Reads and parses JSON from a file.
+ * @param {string} file - The file name.
+ * @returns {Promise<Object>} - Parsed JSON data.
+ * @throws {Error} - Throws an error if parsing fails.
+ */
 async function parseJSON(file) {
     try {
         const data = await fs.readFile(getFilePath(file), 'utf8');
         return JSON.parse(data);
-    } catch (e) {
-        console.error(`Error parsing ${file}: ${e.message}`);
-        return e;
+    } catch (err) {
+        throw new Error(`Error parsing ${file}: ${err.message}`);
     }
 }
 
-async function saveJSON(file, conf) {
+/**
+ * Saves JSON data to a file.
+ * @param {string} file - The file name.
+ * @param {Object} content - The content to save.
+ * @returns {Promise<void>}
+ * @throws {Error} - Throws an error if saving fails.
+ */
+async function saveJSON(file, content) {
     try {
-        await fs.writeFile(getFilePath(file), JSON.stringify(conf, null, "    "));
-    } catch (e) {
-        console.error(`Error saving ${file}: ${e.message}`);
+        await fs.writeFile(getFilePath(file), JSON.stringify(content, null, 4));
+    } catch (err) {
+        throw new Error(`Error saving ${file}: ${err.message}`);
     }
 }
 
-function get(val, def) {
-    if (val) {
-        return config[val] || def;
-    }
-    return config;
+/**
+ * Retrieves a value from the configuration, or the entire config if no key is provided.
+ * @param {string} [key] - The configuration key.
+ * @param {any} [defaultValue] - The default value to return if the key doesn't exist.
+ * @returns {any} - The configuration value or the entire config object.
+ */
+function getConfig(key, defaultValue) {
+    if (!key) return config;
+    return config[key] !== undefined ? config[key] : defaultValue;
 }
 
-exports.get = get;
+exports.get = getConfig;
 
-exports.write = async function(conf) {
-    config = conf;
+/**
+ * Writes new configuration data to the file.
+ * @param {Object} newConfig - The new configuration object.
+ * @returns {Promise<void>}
+ */
+exports.write = async function (newConfig) {
+    config = newConfig;
     await saveJSON(CONFIG_FILENAME, config);
 };
 
+/**
+ * Initializes the configuration and accounts data.
+ * @returns {Promise<string>} - A message indicating the initialization status.
+ */
 exports.init = async function () {
-    let msg = "";
-    
-    if (await fs.access(getFilePath(CONFIG_FILENAME)).then(() => true).catch(() => false)) {
+    let messages = [];
+
+    try {
+        // Load config
         config = await parseJSON(CONFIG_FILENAME);
-        if (typeof config === "string") {
-            msg = `Cannot load ${CONFIG_FILENAME}. ${config.toString()}. Using default config.`;
-            config = defaultConfig;
-        } else {
-            delete config.acceptedKeys;
-            delete config.acceptOverpay;
-        }
-    } else {
-        await exports.write(defaultConfig);
-        msg = "Config generated.";
+        delete config.acceptedKeys; // Remove legacy keys
+        delete config.acceptOverpay;
+    } catch (err) {
+        messages.push(`Config file not found or corrupted: ${err.message}. Using default config.`);
+        config = defaultConfig;
+        await saveJSON(CONFIG_FILENAME, config);
     }
 
-    if (await fs.access(getFilePath(ACCOUNTS_FILENAME)).then(() => true).catch(() => false)) {
+    try {
+        // Load accounts
         accounts = await parseJSON(ACCOUNTS_FILENAME);
-        if (typeof accounts === "string") {
-            msg += ` Cannot load ${ACCOUNTS_FILENAME}. ${accounts.toString()}. No saved account details are available.`;
-            accounts = {};
-        }
-    } else if (config.steam) {
-        for (let name in config.steam.sentries) {
-            let identity_secret = "";
-            let bptfToken = "";
-
-            let tokens = Object.keys(config.tokens);
-            if (tokens.length === 1) bptfToken = config.tokens[tokens[0]];
-
-            let isecrets = Object.keys(config.steam.identitySecret);
-            if (isecrets.length === 1) identity_secret = config.steam.identitySecret[isecrets[0]];
-            accounts[name] = {
-                sentry: config.steam.sentries[name],
-                oAuthToken: (config.steam.oAuthTokens && config.steam.oAuthTokens[name]) || "",
-                identity_secret,
-                bptfToken
-            }
-        }
-        
-        accounts.lastUsedAccount = config.steam.last;
-
-        delete config.steam;
-        delete config.tokens;
-        await exports.write(config);
-        await saveJSON(ACCOUNTS_FILENAME, accounts);
-        msg += " Initialized new account storage.";
+    } catch (err) {
+        messages.push(`Accounts file not found or corrupted: ${err.message}. No saved accounts available.`);
+        accounts = {};
     }
-    
-    return msg.trim();
+
+    return messages.join(' ');
 };
 
+/**
+ * Retrieves account details by ID or the last used account if no ID is provided.
+ * @param {string} [id] - The account ID.
+ * @returns {Object} - The account details.
+ */
 function getAccount(id) {
-    if (id === undefined) {
-        return accounts[lastAccount()];
-    }
-    return accounts[id];
+    return id ? accounts[id] : accounts[accounts.lastUsedAccount] || {};
 }
 
+/**
+ * Saves account details.
+ * @param {string} name - The account name.
+ * @param {Object} details - The account details to save.
+ * @returns {Promise<void>}
+ */
 async function saveAccount(name, details) {
-    if (arguments.length === 1) {
-        details = name;
-        name = lastAccount();
-    }
-
     accounts[name] = details;
     accounts.lastUsedAccount = name;
     await saveJSON(ACCOUNTS_FILENAME, accounts);
 }
 
+/**
+ * Sets the last used account.
+ * @param {string} name - The account name.
+ * @returns {Promise<void>}
+ */
 function setLastUsed(name) {
     accounts.lastUsedAccount = name;
-    saveJSON(ACCOUNTS_FILENAME, accounts);
+    return saveJSON(ACCOUNTS_FILENAME, accounts);
 }
 
-function lastAccount() {
-    return accounts.lastUsedAccount || "";
+/**
+ * Retrieves the last used account name.
+ * @returns {string} - The last used account name.
+ */
+function lastUsedAccount() {
+    return accounts.lastUsedAccount || '';
 }
 
 exports.account = getAccount;
 exports.saveAccount = saveAccount;
-exports.lastUsedAccount = lastAccount;
+exports.lastUsedAccount = lastUsedAccount;
 exports.setLastUsed = setLastUsed;

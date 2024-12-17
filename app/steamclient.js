@@ -24,19 +24,25 @@ exports.register = (Automatic) => {
 
     Login.register(Automatic);
 
-    steam.on('debug', msg => log.debug(msg));
+    steam.on('debug', (msg) => log.debug(msg));
     steam.on('sessionExpired', () => {
-        console.log('sessionExpired');
+        log.warn("Session expired. Attempting to relog...");
         relogSession();
     });
 };
 
 /**
- * Attempts to relog when the session expires.
+ * Relogs into Steam when the session expires.
  */
 async function relogSession() {
-    log.verbose("Renewing session");
-    await main(true);
+    try {
+        log.verbose("Renewing session...");
+        await main(true);
+    } catch (err) {
+        log.error("Failed to relog session:", err.message);
+        // Retry mechanism with a delay
+        setTimeout(relogSession, 60000); // Retry after 1 minute
+    }
 }
 
 /**
@@ -47,21 +53,8 @@ async function relogSession() {
 function saveCookies(cookies, quiet = false) {
     communityCookies = cookies;
     steam.setCookies(cookies);
-    if (!quiet) log.info("Logged into Steam!");
-    else log.debug("Logged into Steam: cookies set");
-}
-
-/**
- * Retrieves the backpack.tf token from the account configuration or gets a new one.
- * @returns {string} - The backpack.tf token.
- */
-function getBackpackToken() {
-    const acc = Config.account();
-    return acc?.bptfToken || backpack.getToken();
-}
-
-exports.connect = async () => {
-    await main(true);
+    if (!quiet) log.info("Logged into Steam successfully!");
+    else log.debug("Cookies set quietly for Steam session.");
 }
 
 /**
@@ -72,7 +65,8 @@ async function loginData() {
     try {
         const data = await fs.readFile(path.join(__dirname, 'accounts.json'), 'utf8');
         return JSON.parse(data);
-    } catch {
+    } catch (err) {
+        log.error("Failed to read account data:", err.message);
         return false;
     }
 }
@@ -84,29 +78,24 @@ async function loginData() {
 async function main(enableTradeManager = false) {
     try {
         const accountData = await loginData();
-        let account = accountData[accountData.lastUsedAccount] || {};
+        const account = accountData[accountData.lastUsedAccount] || {};
 
         if (!account.name || !account.password) {
-            const promtData = await Prompts.accountDetails();
-            account.name = promtData.accountName;
-            account.password = promtData.password;
+            log.info("Prompting for account details...");
+            const promptData = await Prompts.accountDetails();
+            account.name = promptData.accountName;
+            account.password = promptData.password;
         }
 
-        if (!account.bptfToken) account.bptfToken = await Prompts.backpackToken();
-        if (!account.bptApiKey) account.bptApiKey = await Prompts.backpackApiKey();
+        // Prompt for missing tokens and secrets
+        account.bptfToken = account.bptfToken || (await Prompts.backpackToken());
+        account.bptApiKey = account.bptApiKey || (await Prompts.backpackApiKey());
 
-        account.identity_secret = (!account.identity_secret && !account.dont_ask_identity_secret_again) 
-            ? await Prompts.identity_secret() 
-            : account.identity_secret;
         if (!account.identity_secret || account.identity_secret.length < 10) {
-            account.dont_ask_identity_secret_again = true;
+            account.identity_secret = await Prompts.identity_secret();
         }
-
-        account.sharedSecret = (!account.sharedSecret && !account.dont_ask_sharedSecret_again) 
-            ? await Prompts.sharedSecret() 
-            : account.sharedSecret;
         if (!account.sharedSecret || account.sharedSecret.length < 10) {
-            account.dont_ask_sharedSecret_again = true;
+            account.sharedSecret = await Prompts.sharedSecret();
         }
 
         await Config.saveAccount(account.name, account);
@@ -114,133 +103,62 @@ async function main(enableTradeManager = false) {
         const session = new SteamSession.LoginSession(SteamSession.EAuthTokenPlatformType.MobileApp);
 
         session.on('authenticated', async () => {
-            const cookies = await session.getWebCookies();
-            saveCookies(cookies);
-            if (enableTradeManager) await setupTradeManager();
-            else manager.setCookies(communityCookies);
+            try {
+                const cookies = await session.getWebCookies();
+                saveCookies(cookies);
+                if (enableTradeManager) {
+                    await setupTradeManager();
+                } else {
+                    manager.setCookies(communityCookies);
+                }
+            } catch (err) {
+                log.error("Error during authentication:", err.message);
+            }
         });
 
         session.on('timeout', () => {
-            console.log('This login attempt has timed out.');
+            log.warn("Login attempt timed out. Retrying...");
             relogSession();
         });
 
         session.on('error', (err) => {
-            console.error(`ERROR: This login attempt has failed! ${err.message}`);
+            log.error("Login attempt failed:", err.message);
         });
 
-        let startResult = await session.startWithCredentials({ accountName: account.name, password: account.password });
+        const startResult = await session.startWithCredentials({ accountName: account.name, password: account.password });
         if (startResult.actionRequired) {
-            const codeActionTypes = [SteamSession.EAuthSessionGuardType.EmailCode, SteamSession.EAuthSessionGuardType.DeviceCode];
-            const codeAction = startResult.validActions.find(action => codeActionTypes.includes(action.type));
-            if (codeAction) {
-                if (codeAction.type === SteamSession.EAuthSessionGuardType.EmailCode) {
-                    console.log(`A code has been sent to your email address at ${codeAction.detail}.`);
-                } else {
-                    console.log('You need to provide a Steam Guard Mobile Authenticator code.');
-                }
-
-                const sharedSecret = account.sharedSecret;
-                if (sharedSecret && sharedSecret.length > 10) {
-                    const code = SteamTotp.getAuthCode(sharedSecret);
-                    await session.submitSteamGuardCode(code);
-                } else {
-                    const code = await Prompts.steamGuardCode("SteamGuardMobile");
-                    await session.submitSteamGuardCode(code);
-                }
-            }
+            await handleActionRequired(startResult, account, session);
         }
     } catch (err) {
-        console.error('Login error:', err);
-        // Consider implementing a retry mechanism here if needed
+        log.error("Login error:", err.message);
     }
 }
 
 /**
- * Manages the heartbeat loop to keep the session alive.
+ * Handles required actions during login (e.g., Steam Guard codes).
  */
-function heartbeatLoop() {
-    backpack.heartbeat().then(timeout => setTimeout(heartbeatLoop, timeout)).catch(err => {
-        console.error('Heartbeat failed:', err);
-        setTimeout(heartbeatLoop, 10000); // Retry after 10 seconds
-    });
-}
-
-/**
- * Sets up the trade manager with necessary configurations.
- */
-async function setupTradeManager() {
+async function handleActionRequired(startResult, account, session) {
     try {
-        const timeout = await backpack.heartbeat();
+        const codeActionTypes = [SteamSession.EAuthSessionGuardType.EmailCode, SteamSession.EAuthSessionGuardType.DeviceCode];
+        const codeAction = startResult.validActions.find((action) => codeActionTypes.includes(action.type));
 
-        if (timeout === "getToken") {
-            await backpack.getToken().then(setupTradeManager);
-        } else if (timeout === "getApiKey") {
-            await backpack.getApiKey().then(setupTradeManager);
-        } else {
-            const acc = Config.account();
-
-            if (Confirmations.enabled()) {
-                if (acc.identity_secret) {
-                    log.info(`Starting Steam confirmation checker (accepting ${automatic.confirmationsMode()})`);
-                    Confirmations.setSecret(acc.identity_secret);
-                } else {
-                    log.warn("Trade offers won't be confirmed automatically. Supply an identity_secret to enable auto-acceptance. Use 'help identity_secret' for guidance. Hide this message with 'confirmations none'.");
-                }
+        if (codeAction) {
+            if (codeAction.type === SteamSession.EAuthSessionGuardType.EmailCode) {
+                log.info(`Email code required: sent to ${codeAction.detail}`);
             } else {
-                log.verbose("Trade confirmations are disabled; confirmation checker not started.");
+                log.info("Steam Guard Mobile Authenticator code required.");
             }
 
-            log.debug("Launching input console.");
-            appConsole.startConsole(automatic);
+            const sharedSecret = account.sharedSecret;
+            const code = sharedSecret && sharedSecret.length > 10
+                ? SteamTotp.getAuthCode(sharedSecret)
+                : await Prompts.steamGuardCode("SteamGuardMobile");
 
-            if (!g_RelogInterval) {
-                //g_RelogInterval = setInterval(relog, 1 * 60 * 60 * 1000); // every hour, currently commented out
-            }
-            setTimeout(heartbeatLoop, timeout);
-
-            await new Promise((resolve, reject) => {
-                manager.setCookies(communityCookies, (err) => {
-                    if (err) {
-                        log.error("Can't get apiKey from Steam: " + err);
-                        reject(err);
-                    } else {
-                        log.info(`Automatic ready. Sell orders enabled; Buy orders ${automatic.buyOrdersEnabled() ? "enabled" : "disabled (type buyorders toggle to enable, help buyorders for info)"}`);
-                        setInterval(checkOfferCount, 5 * 60 * 1000);
-                        resolve();
-                    }
-                });
-            });
+            await session.submitSteamGuardCode(code);
         }
-    } catch(err) {
-        console.error('Error in setupTradeManager:', err);
-        await Utils.after.timeout(60 * 1000); // Wait for 1 minute before retrying
-        await setupTradeManager();
-    }
-}
-
-/**
- * Relogs the user into Steam if necessary credentials are available.
- */
-async function relog() {
-    const acc = Config.account();
-    if (acc && acc.sentry && acc.oAuthToken) {
-        log.verbose("Renewing web session");
-        try {
-            const cookies = await Login.oAuthLogin(acc.sentry, acc.oAuthToken, true);
-            saveCookies(cookies, true);
-            log.verbose("Web session renewed");
-        } catch (err) {
-            log.debug(`Failed to relog (checking login): ${err.message}`);
-            try {
-                await Login.isLoggedIn();
-                log.verbose("Web session still valid");
-            } catch {
-                log.warn("Web session no longer valid. Steam might be down or session expired. Refresh by logging out, restarting Automatic, and re-entering credentials");
-            }
-        }
-    } else {
-        log.verbose("OAuth token not saved, can't renew web session.");
+    } catch (err) {
+        log.error("Error handling action required:", err.message);
+        throw err;
     }
 }
 
@@ -248,29 +166,27 @@ async function relog() {
  * Checks the number of trade offers and logs the count.
  */
 async function checkOfferCount() {
-    if (manager.apiKey === null) return;
+    if (!manager.apiKey) return;
 
     try {
         const [_, response] = await Utils.getJSON({
-            url: "https://api.steampowered.com/IEconService/GetTradeOffersSummary/v1/?key=" + manager.apiKey
+            url: `https://api.steampowered.com/IEconService/GetTradeOffersSummary/v1/?key=${manager.apiKey}`,
         });
 
         if (!response) {
-            log.warn("Cannot get trade offer count: malformed response");
-            log.debug(`apiKey used: ${manager.apiKey}`);
+            log.warn("Malformed response while fetching trade offer count.");
             return;
         }
 
-        const { 
-            pending_sent_count: pendingSent, 
-            pending_received_count: pendingReceived, 
-            escrow_received_count, 
-            escrow_sent_count 
+        const {
+            pending_sent_count: pendingSent,
+            pending_received_count: pendingReceived,
+            escrow_received_count,
+            escrow_sent_count,
         } = response;
 
-        log.verbose(`${pendingReceived} incoming offer${pendingReceived === 1 ? '' : 's'} (${escrow_received_count} on hold), ${pendingSent} sent offer${pendingSent === 1 ? '' : 's'} (${escrow_sent_count} on hold)`);
-    } catch (msg) {
-        log.warn("Cannot get trade offer count: " + msg);
-        log.debug(`apiKey used: ${manager.apiKey}`);
+        log.verbose(`${pendingReceived} incoming offer(s) (${escrow_received_count} on hold), ${pendingSent} sent offer(s) (${escrow_sent_count} on hold)`);
+    } catch (err) {
+        log.warn("Failed to fetch trade offer count:", err.message);
     }
 }

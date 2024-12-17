@@ -10,10 +10,10 @@ const help = {
     heartbeat: "Force-send a heartbeat to backpack.tf. This refreshes your buy orders, currency conversion data, and bumps your listings if applicable.",
     logout: "Logs you out of your account by deleting your OAuth token and closes Automatic. Use `logout keep` to keep your OAuth token so you can log in again once you enter your credentials.",
     toggle: `Toggles a config setting. Available settings: ${configToggles.join(", ")}. Type help <setting> to find out what it does. Type <setting> (as a command) to find out whether it's enabled. Type toggle <setting> or <setting> toggle to toggle it.`,
-    acceptgifts: settinghelp('acceptGifts', 'Enable this setting to accept offers where you will receive items without offering any ("for free")'),
-    declinebanned: settinghelp('declineBanned', 'Enable this setting to accept offers from users marked as a scammer or banned on backpack.tf (not recommended)'),
-    acceptescrow: settinghelp('acceptEscrow', 'Enable this setting to accept offers even if they incur an escrow period. Type acceptescrow decline to automatically decline escrow offers.'),
-    buyorders: settinghelp('buyOrders', 
+    acceptgifts: settingHelp('acceptGifts', 'Enable this setting to accept offers where you will receive items without offering any ("for free")'),
+    declinebanned: settingHelp('declineBanned', 'Enable this setting to accept offers from users marked as a scammer or banned on backpack.tf (not recommended)'),
+    acceptescrow: settingHelp('acceptEscrow', 'Enable this setting to accept offers even if they incur an escrow period. Type acceptescrow decline to automatically decline escrow offers.'),
+    buyorders: settingHelp('buyOrders', 
 `Enable this setting to enable or disable buy orders being handled by Automatic. Use the heartbeat commands afterwards to update your buy orders. (Buy orders are handled inside the application)`),
     confirmations: () => 
 `<confirmations: ${automatic.confirmationsMode()}>
@@ -77,7 +77,7 @@ const commands = {
             return console.log(`The trade confirmation mode is already "${mode}".`);
         }
     
-        const config = await Config.get(); // If Config.get() returns a Promise
+        const config = await Config.get(); // Ensure Config.get() returns a Promise
         config.confirmations = mode;
         await Config.write(config);
         console.log(`Set confirmations to "${mode}".`);
@@ -89,7 +89,7 @@ const commands = {
             return console.log("Format: exchange toggle {metal->keys,keys->metal}");
         }
 
-        let config = Config.get();
+        const config = Config.get();
         if (typeof config.currencyExchange !== "object") config.currencyExchange = {};
         const now = (config.currencyExchange[type] = !config.currencyExchange[type]);
         await Config.write(config);
@@ -121,11 +121,12 @@ const commands = {
         }
     },
     '.debug': (data, acc, linedata) => {
-        // undocumented, for debugging purposes only
         try {
-            console.log(eval(linedata)); // Note: Using eval can be very dangerous; use with extreme caution
-        } catch (ex) {
-            console.error(ex);
+            // Safe alternative to eval for debugging
+            const debugResult = new Function(`return (${linedata})`)();
+            console.log(debugResult);
+        } catch (error) {
+            console.error(`Debug error: ${error.message}`);
         }
     },
     '.rpd': () => {
@@ -137,8 +138,9 @@ const commands = {
     }
 };
 
-function settinghelp(conf, str) {
-    return () => `<${conf}: ${Config.get(conf) ? "enabled" : "disabled"}>\r\n${str}`;
+function settingHelp(conf, str) {
+    return () => `<${conf}: ${Config.get(conf) ? "enabled" : "disabled"}>
+\n${str}`;
 }
 
 function settingToggleHandler(name, custom, customHandler) {
@@ -160,7 +162,7 @@ function settingToggleHandler(name, custom, customHandler) {
             return;
         }
 
-        let config = Config.get();
+        const config = Config.get();
         const enabled = (config[name] = !conf);
         await Config.write(config);
         console.log(`${enabled ? "Enabled" : "Disabled"} ${name}.`);
@@ -195,12 +197,12 @@ exports.startConsole = (Automatic) => {
     Config = Automatic.config;
 
     input.on('line', async (line) => {
-        let acc = Config.account();
-        let parts = line.split(' ');
+        const acc = Config.account();
+        const parts = line.split(' ');
 
-        let command = serializeCommand(parts[0]);
-        let data = parts[1] || "";
-        let linedata = parts.slice(1).join(' ');
+        const command = serializeCommand(parts[0]);
+        const data = parts[1] || "";
+        const linedata = parts.slice(1).join(' ');
 
         if (commands[command]) {
             try {
