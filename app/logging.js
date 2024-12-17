@@ -1,84 +1,62 @@
-const winston = require('winston');
+const Winston = require('winston');
 const moment = require('moment');
 
 const LOG_LEVELS = {
-    debug: 5,
-    verbose: 4,
-    info: 3,
-    warn: 2,
-    error: 1,
-    trade: 0,
+    "debug": 5,
+    "verbose": 4,
+    "info": 3,
+    "warn": 2,
+    "error": 1,
+    "trade": 0
 };
 
 const LOG_COLORS = {
-    debug: 'blue',
-    verbose: 'cyan',
-    info: 'green',
-    warn: 'yellow',
-    error: 'red',
-    trade: 'magenta',
+    "debug": "blue",
+    "verbose": "cyan",
+    "info": "green",
+    "warn": "yellow",
+    "error": "red",
+    "trade": "magenta"
 };
-
-// Add colors to winston
-winston.addColors(LOG_COLORS);
 
 exports.LOG_LEVELS = LOG_LEVELS;
 exports.LOG_COLORS = LOG_COLORS;
-
 exports.register = (Automatic) => {
-    let steam = Automatic.steam,
+    let logger = Automatic.log,
+        steam = Automatic.steam,
         config = Automatic.config.get();
 
-    const logger = winston.createLogger({
-        levels: LOG_LEVELS,
-        format: winston.format.combine(
-            winston.format.timestamp({
-                format: () => getTimestamp(steam.username, config.dateFormat || 'HH:mm:ss'),
-            }),
-            winston.format.colorize(),
-            winston.format.printf((info) => {
-                return `[${info.timestamp}] [${info.level}]: ${info.message}`;
-            })
-        ),
-        transports: [],
+    logger.add(Winston.transports.Console, {
+        "name": "console",
+        "level": (config.logs && config.logs.console && config.logs.console.level) ? config.logs.console.level : "info",
+        "colorize": true,
+        "timestamp": getTimestamp
     });
 
-    // Console transport
-    logger.add(
-        new winston.transports.Console({
-            level: config.logs?.console?.level || 'info',
-        })
-    );
-
-    // File transport for general logs
-    if (config.logs?.file && !config.logs.file.disabled) {
-        logger.add(
-            new winston.transports.File({
-                filename: config.logs.file.filename || 'automatic.log',
-                level: config.logs.file.level || 'warn',
-            })
-        );
+    // See if we want a log file, and if so, add it
+    if (config.logs && config.logs.file && !config.logs.file.disabled) {
+        logger.add(Winston.transports.File, {
+            "name": "log.all",
+            "level": config.logs.file.level || "warn",
+            "filename": config.logs.file.filename || "automatic.log",
+            "json": false,
+            "timestamp": getTimestamp
+        });
     }
 
-    // File transport for trade logs
-    if (config.logs?.trade && !config.logs.trade.disabled) {
-        logger.add(
-            new winston.transports.File({
-                filename: config.logs.trade.filename || 'automatic.trade.log',
-                level: 'trade',
-            })
-        );
+    // See if we want a trade log file, and if so, add it
+    if (config.logs && config.logs.trade && !config.logs.trade.disabled) {
+        logger.add(Winston.transports.File, {
+            "name": "log.trade",
+            "level": "trade",
+            "filename": config.logs.trade.filename || "automatic.trade.log",
+            "json": false,
+            "timestamp": getTimestamp
+        });
     }
 
-    Automatic.log = logger;
-
-    // Helper function to get timestamp
-    function getTimestamp(username, dateFormat) {
-        try {
-            return (username ? `[${username}] ` : '') + moment().format(dateFormat);
-        } catch (err) {
-            console.error('Invalid date format:', err.message);
-            return '[INVALID_TIMESTAMP]';
-        }
+    // This function returns our timestamp format
+    function getTimestamp() {
+        return (steam.username ? '[' + steam.username + '] ' : '') + moment().format(config.dateFormat || "HH:mm:ss");
     }
 };
