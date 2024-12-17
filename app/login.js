@@ -1,10 +1,11 @@
-const Utils = require('./utils');
-const Prompts = require('./prompts');
-const fs = require('fs');
+import Utils from './utils.js';
+import Prompts from './prompts.js';
+import { promises as fs } from 'fs';
 
 let Automatic, steam, log, Config;
 
-exports.register = (automatic) => {
+// Register automatic dependencies
+export const register = (automatic) => {
     Automatic = automatic;
     steam = Automatic.steam;
     log = Automatic.log;
@@ -12,112 +13,115 @@ exports.register = (automatic) => {
     Prompts.register(automatic);
 };
 
-function oAuthLogin(sentry, token) {
-
+// OAuth login with sentry and token
+export const oAuthLogin = (sentry, token) => {
     return new Promise((resolve, reject) => {
         steam.oAuthLogin(sentry, token, (err, sessionID, cookies) => {
             if (err) reject(err);
             else resolve(cookies);
         });
     });
-}
+};
 
-exports.oAuthLogin = oAuthLogin;
-function isLoggedIn() {
+// Check if the user is logged in
+export const isLoggedIn = async () => {
     return new Promise((resolve, reject) => {
         steam.loggedIn((err, loggedIn, familyView) => {
             if (err || !loggedIn || familyView) {
-                return reject([err, loggedIn, familyView]);
+                reject([err, loggedIn, familyView]);
+            } else {
+                resolve();
             }
-
-            return resolve();
         });
     });
-}
+};
 
-exports.isLoggedIn = isLoggedIn;
-
-function parentalUnlock(pin) {
+// Unlock parental (family view) mode
+const parentalUnlock = async (pin) => {
     return new Promise((resolve, reject) => {
         steam.parentalUnlock(pin, (err) => {
             if (err) {
-                log.error("Unlock failed: " + err.message);
+                log.error(`Unlock failed: ${err.message}`);
                 reject(err);
             } else {
                 resolve();
             }
         });
     });
-}
+};
 
-exports.unlockFamilyView = () => {
-    return new Promise((resolve) => {
-        Prompts.familyViewPin()
-            .then(parentalUnlock)
-            .then(resolve)
-            .catch(exports.unlockFamilyView);
+// Unlock family view with retries
+export const unlockFamilyView = async () => {
+    try {
+        const pin = await Prompts.familyViewPin();
+        await parentalUnlock(pin);
+    } catch (err) {
+        await unlockFamilyView();
+    }
+};
+
+// Prompt for login details
+export const promptLogin = async () => {
+    const details = await Prompts.accountDetails();
+    const acc = Config.account(details.accountName);
+
+    if (acc?.sentry && acc?.oAuthToken) {
+        log.info("Logging into Steam with OAuth token");
+        return oAuthLogin(acc.sentry, acc.oAuthToken);
+    }
+
+    return performLogin(details);
+};
+
+// Perform login process
+const performLogin = async (details) => {
+    return new Promise((resolve, reject) => {
+        steam.login(details, (err, sessionID, cookies, steamguard, oAuthToken) => {
+            if (err) {
+                handleLoginError(err, details, resolve, reject);
+            } else {
+                saveLoginDetails(details, steamguard, oAuthToken, cookies).then(() => resolve(cookies));
+            }
+        });
     });
 };
 
-function promptLogin() {
-    return Prompts.accountDetails().then((details) => {
-        //console.log(details, 'promtLogin', details.accountName)
-        const acc = Config.account(details.accountName);
+// Handle Steam login errors
+const handleLoginError = async (err, details, resolve, reject) => {
+    const errcode = err.message;
 
-        if (acc && acc.sentry && acc.oAuthToken) {
-            log.info("Logging into Steam with OAuth token");
-            return oAuthLogin(acc.sentry, acc.oAuthToken);
+    switch (errcode) {
+        case 'SteamGuard':
+        case 'SteamGuardMobile': {
+            const isMobile = errcode === 'SteamGuardMobile';
+            const code = await Prompts.steamGuardCode(isMobile);
+            details[isMobile ? 'twoFactorCode' : 'authCode'] = code;
+            performLogin(details).then(resolve, reject);
+            break;
         }
+        case 'CAPTCHA': {
+            const code = await Prompts.CAPTCHA(err.captchaurl);
+            details.captcha = code;
+            performLogin(details).then(resolve, reject);
+            break;
+        }
+        default: {
+            log.error(`Login failed: ${errcode}`);
+            await Utils.after.seconds(20);
+            performLogin(details).then(resolve, reject);
+        }
+    }
+};
 
-        return performLogin(details);
-    });
-}
+// Save login details if prompted
+const saveLoginDetails = async (details, steamguard, oAuthToken, cookies) => {
+    const save = await Prompts.rememberLogin();
+    const account = Config.account(details.accountName) || {};
+    account.sentry = steamguard;
 
-exports.promptLogin = promptLogin;
+    if (save) account.oAuthToken = oAuthToken;
+    await Config.saveAccount(details.accountName, account);
 
-function performLogin(details) {
-    return new Promise((resolve, reject) => {
-        console.log(details, 'details in performLogin')
-        steam.login(details, (err, sessionID, cookies, steamguard, oAuthToken) => {
-            if (err) {
-                console.log('hello')
-                // There was a problem logging in
-                let errcode = err.message;
-                switch (errcode) {
-                    case 'SteamGuard':
-                    case 'SteamGuardMobile': {
-                        let isMobile = errcode === "SteamGuardMobile";
-                        Prompts.steamGuardCode(isMobile).then((code) => {
-                            details[isMobile ? "twoFactorCode" : "authCode"] = code;
-                            performLogin(details).then(resolve, reject);
-                        });
-                        break;
-                    }
-                    case 'CAPTCHA':
-                        // We couldn't login because we need to fill in a captcha
-                        Prompts.CAPTCHA(err.captchaurl).then((code) => {
-                            details.captcha = code;
-                            performLogin(details).then(resolve, reject);
-                        })
-                        break;
-                    default:
-                        // Some other error occurred
-                        log.error("Login failed: " + errcode);
-                        Utils.after.seconds(20).then(() => performLogin(details).then(resolve, reject));
-                }
-                return;
-            }
-            //Du4CQTk79DT
-            Prompts.rememberLogin().then((save) => {
-                console.log(save, details, err, sessionID, cookies, steamguard, oAuthToken)
-                let account = Config.account(details.accountName) || {};
-                account.sentry = steamguard;
-                if (save) account.oAuthToken = oAuthToken;
-                Config.saveAccount(details.accountName, account);
-                
-                log.info("Logged into Steam!");
-                resolve(cookies);
-            });
-        });
-    });
-}
+    log.info("Logged into Steam!");
+};
+
