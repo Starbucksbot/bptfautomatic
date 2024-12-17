@@ -271,6 +271,8 @@ function buyItem(offer, bpItem, invItem, invItemIndex, oursignore, theirsignore)
 }
 
 function handleBuyOrdersFor(offer) {
+    loadAutomaticOffer(); // Ensure AutomaticOffer is loaded
+
     const { ours, theirs } = offer.exchange;
     const bo = automatic.listings;
 
@@ -283,6 +285,8 @@ function handleBuyOrdersFor(offer) {
     let oursignore = [];
     let theirsignore = [];
     let items = createUserItemDict(theirs);
+    
+    // Initialize 'unusuals' as a Map to store unusual items
     let unusuals = new Map();
 
     if (items === false) {
@@ -290,7 +294,7 @@ function handleBuyOrdersFor(offer) {
         return false;
     }
 
-    // Process buy orders
+    // Process buy orders and populate 'unusuals' as needed
     for (const item of bo) {
         const quality = item.item.quality;
         const attributes = item.item.attributes || [];
@@ -320,9 +324,6 @@ function handleBuyOrdersFor(offer) {
                 continue;
             }
 
-            // Check for particle match if applicable
-            if (quality === 5 && listingParticle && !eqParticle(orig, item)) continue;
-
             if (uncraft !== AutomaticOffer.itemIsUncraftable(orig)) continue;
 
             if (Number(killstreak) !== AutomaticOffer.itemKillstreakTier(orig)) continue;
@@ -331,7 +332,7 @@ function handleBuyOrdersFor(offer) {
         }
     }
 
-    // Handle unusuals with priority for matched particles
+    // Additional handling for unusuals
     for (let [orig, matches] of unusuals) {
         let match = findParticleMatch(orig, matches);
 
@@ -344,10 +345,10 @@ function handleBuyOrdersFor(offer) {
         }
     }
 
-    // Apply filters to remove ignored items
     applyFilter(offer.items, 'ours', ours, oursignore);
     applyFilter(offer.items, 'theirs', theirs, theirsignore);
 }
+
 for (let [orig, matches] of unusuals) {
     let match = findParticleMatch(orig, matches);
 
