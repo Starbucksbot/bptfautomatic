@@ -3,8 +3,11 @@ const querystring = require('querystring');
 const { prompt } = require('prompt');
 require('colors');
 
-// Set up prompt
-prompt.message = prompt.delimiter = "";
+// Configure prompt if it's available
+if (prompt) {
+    prompt.message = "";
+    prompt.delimiter = "";
+}
 
 /**
  * Fetches JSON data from a given URL.
@@ -90,6 +93,9 @@ exports.postForm = opts => exports.postJSON(opts, false);
  * @returns {Promise<Object>} - Promise that resolves to the user's input.
  */
 exports.prompt = async function (props) {
+    if (!prompt) {
+        throw new Error("Prompt module is not available or not properly initialized.");
+    }
     prompt.start();
     return new Promise((resolve, reject) => {
         prompt.get({ properties: props }, (err, result) => {
