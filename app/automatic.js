@@ -1,24 +1,25 @@
-import fs from 'fs/promises'; // Modern fs/promises
+import fs from 'fs/promises';
 import { createLogger, format, transports } from 'winston';
-
 import SteamCommunity from 'steamcommunity';
 import TradeOfferManager from 'steam-tradeoffer-manager';
 
-// Load dependencies and error handling
+// Dynamic imports for modules
+let logging, Config, trade, steam, backpack, Utils;
+
 try {
-    var logging = await import('./logging.js');
-    var Config = await import('./config.js');
-    var trade = await import('./trade.js');
-    var steam = await import('./steamclient.js');
-    var backpack = await import('./backpacktf.js');
-    var Utils = await import('./utils.js');
+    logging = (await import('./logging.js')).default;
+    Config = (await import('./config.js')).default;
+    trade = (await import('./trade.js')).default;
+    steam = (await import('./steamclient.js')).default;
+    backpack = (await import('./backpacktf.js')).default;
+    Utils = (await import('./utils.js')).default;
 } catch (ex) {
-    console.error("Missing dependencies. Install via npm install or check the installation.");
+    console.error("Missing dependencies. Install via npm install or check the installation.", ex);
     process.exit(1);
 }
 
 // Load version from package.json
-let version = "1.1.0"; // Default
+let version = "1.1.0";
 try {
     const packageData = JSON.parse(await fs.readFile('../package.json', 'utf-8'));
     const vers = packageData.version || "(unknown)";
@@ -54,15 +55,13 @@ const Automatic = {
     }
 };
 
-// Initialize Winston logger (modern syntax)
+// Initialize Winston logger
 const log = createLogger({
     levels: logging.LOG_LEVELS,
     format: format.combine(
         format.colorize(),
         format.timestamp(),
-        format.printf(({ level, message, timestamp }) => {
-            return `[${timestamp}] ${level}: ${message}`;
-        })
+        format.printf(({ level, message, timestamp }) => `[${timestamp}] ${level}: ${message}`)
     ),
     transports: [new transports.Console()]
 });
@@ -77,26 +76,16 @@ Automatic.manager = new TradeOfferManager({
 
 // Register modules
 function register(...modules) {
-    modules.forEach(component => {
-        if (typeof component === "string") {
-            component = require(`./${component}`);
-        }
-        component.register(Automatic);
-    });
+    modules.forEach(component => component.register(Automatic));
 }
 
-register(logging, trade, backpack, steam, 'automatic-offer', 'confirmations');
+await register(logging, trade, backpack, steam, (await import('./automatic-offer.js')).default, (await import('./confirmations.js')).default);
 
 // Start and handle uncaught exceptions
 log.info(`backpack.tf Automatic v${version} starting`);
 process.nextTick(() => steam.connect());
 
 process.on('uncaughtException', err => {
-    log.error([
-        `backpack.tf Automatic crashed!`,
-        `Error: ${err.message}`,
-        `Stack: ${err.stack}`,
-        `Contact SteamID: ${Automatic.getOwnSteamID()}`,
-    ].join('\n'));
+    log.error(`backpack.tf Automatic crashed!\nError: ${err.message}\nStack: ${err.stack}\nContact SteamID: ${Automatic.getOwnSteamID()}`);
     process.exit(1);
 });

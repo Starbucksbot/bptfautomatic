@@ -13,22 +13,32 @@ const cm = () => automatic.confirmationsMode();
 const timenow = () => Math.floor(Date.now() / 1000);
 const totpKey = (secret, tag) => SteamTotp.getConfirmationKey(secret, timenow(), tag);
 
+// Dynamically import AutomaticOffer
+const loadAutomaticOffer = async () => {
+    if (!AutomaticOffer) {
+        const module = await import('./automatic-offer.js');
+        AutomaticOffer = module.default || module;
+    }
+    return AutomaticOffer;
+};
+
 // Check if confirmations are enabled
 export const enabledStatus = () => cm() !== "none";
 
 // Accept a confirmation
-export const accept = (confirmation, secret) => {
+export const accept = async (confirmation, secret) => {
     const cid = `#${confirmation.id}`;
     automatic.log.verbose(`Accepting confirmation ${cid}`);
 
     const time = timenow();
-    confirmation.respond(time, totpKey(secret, "allow"), true, (err) => {
+    confirmation.respond(time, totpKey(secret, "allow"), true, async (err) => {
         if (err) {
             return automatic.log.error(`Error accepting confirmation ${cid}.`);
         }
 
         const creator = confirmation.creator;
         let message = `Confirmation ${cid} accepted`;
+        const AutomaticOffer = await loadAutomaticOffer();
         const handledByAutomatic = confirmation.type === ConfirmationType.Trade && offerids[creator];
 
         if (handledByAutomatic) {
@@ -50,16 +60,16 @@ export const enable = () => {
         callback(null, timenow(), totpKey(identity_secret, tag));
     });
 
-    steam.on('newConfirmation', (confirmation) => {
+    steam.on('newConfirmation', async (confirmation) => {
         const mode = cm();
 
         if (mode === "all") {
-            accept(confirmation, identity_secret);
+            await accept(confirmation, identity_secret);
         } else if (mode === "own" && offerids[confirmation.creator]) {
-            accept(confirmation, identity_secret);
+            await accept(confirmation, identity_secret);
         } else if (mode === "own+market") {
             if (offerids[confirmation.creator] || confirmation.type === ConfirmationType.MarketListing) {
-                accept(confirmation, identity_secret);
+                await accept(confirmation, identity_secret);
             }
         }
         // "none" mode is ignored
@@ -88,10 +98,9 @@ export const addOffer = (id) => {
 };
 
 // Register automatic and steam instances
-export const register = (Automatic) => {
+export const register = async (Automatic) => {
     automatic = Automatic;
     steam = automatic.steam;
 
-    // Dynamic import for automatic-offer
-    AutomaticOffer = require('./automatic-offer');
+    await loadAutomaticOffer();
 };

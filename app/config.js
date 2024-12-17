@@ -8,10 +8,10 @@ const defaultConfig = {
     dateFormat: "HH:mm:ss",
     acceptGifts: false,
     declineBanned: true,
-    acceptEscrow: false, // or: true, "decline"
+    acceptEscrow: false,
     currencyExchange: { "metal->keys": false, "keys->metal": false },
     buyOrders: true,
-    confirmations: "all", // or: "own", "own+market", "none"
+    confirmations: "all",
     logs: {
         console: { level: "verbose" },
         file: { filename: "automatic.log", disabled: false, level: "info" },
@@ -23,90 +23,28 @@ const defaultConfig = {
 let config = {};
 let accounts = {};
 
-// Helper function: Read JSON file safely
-async function parseJSON(file) {
+export async function init() {
+    let msg = "";
     try {
-        const data = await readFile(file, 'utf-8');
-        return JSON.parse(data);
-    } catch (e) {
-        return null; // Return null for error
+        await access(CONFIG_FILENAME, constants.F_OK);
+        config = JSON.parse(await readFile(CONFIG_FILENAME, 'utf-8'));
+    } catch {
+        config = defaultConfig;
+        await saveConfig();
+        msg = "Config generated.";
     }
+    return msg.trim();
 }
 
-// Helper function: Write JSON to file
-async function saveJSON(file, data) {
-    await writeFile(file, JSON.stringify(data, null, 4));
+async function saveConfig() {
+    await writeFile(CONFIG_FILENAME, JSON.stringify(config, null, 4));
 }
 
-// Retrieve configuration value
 export function get(val, def) {
     return val ? config[val] || def : config;
 }
 
-// Write updated config
-export async function write(conf) {
-    config = conf;
-    await saveJSON(CONFIG_FILENAME, config);
-}
-
-// Initialize configuration
-export async function init() {
-    let msg = "";
-
-    try {
-        // Load or initialize config
-        await access(CONFIG_FILENAME, constants.F_OK);
-        const parsedConfig = await parseJSON(CONFIG_FILENAME);
-        if (parsedConfig) {
-            config = parsedConfig;
-            delete config.acceptedKeys;
-            delete config.acceptOverpay;
-        } else {
-            msg = `Cannot load ${CONFIG_FILENAME}. Using default config.`;
-            await write(defaultConfig);
-        }
-    } catch {
-        msg = "Config generated.";
-        await write(defaultConfig);
-    }
-
-    try {
-        // Load or initialize accounts
-        await access(ACCOUNTS_FILENAME, constants.F_OK);
-        const parsedAccounts = await parseJSON(ACCOUNTS_FILENAME);
-        accounts = parsedAccounts || {};
-    } catch {
-        accounts = {};
-        msg += " No saved account details are available.";
-    }
-
-    return msg.trim();
-}
-
-// Get account details
-export function account(id) {
-    return id ? accounts[id] : accounts[lastUsedAccount()];
-}
-
-// Save or update an account
 export async function saveAccount(name, details) {
-    if (arguments.length === 1) {
-        details = name;
-        name = lastUsedAccount();
-    }
-
     accounts[name] = details;
-    accounts.lastUsedAccount = name;
-    await saveJSON(ACCOUNTS_FILENAME, accounts);
-}
-
-// Set last used account
-export async function setLastUsed(name) {
-    accounts.lastUsedAccount = name;
-    await saveJSON(ACCOUNTS_FILENAME, accounts);
-}
-
-// Get last used account
-export function lastUsedAccount() {
-    return accounts.lastUsedAccount || "";
+    await writeFile(ACCOUNTS_FILENAME, JSON.stringify(accounts, null, 4));
 }
