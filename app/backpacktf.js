@@ -284,7 +284,7 @@ function handleBuyOrdersFor(offer) {
             if (uncraft !== AutomaticOffer.itemIsUncraftable(orig)) continue;
             if (killstreak !== AutomaticOffer.itemKillstreakTier(orig)) continue;
 
-            buyItem(offer, item, orig, index, oursignire, theirsignore);
+            buyItem(offer, item, orig, index, oursignore, theirsignore);
         }
     }
 
@@ -305,193 +305,93 @@ function handleBuyOrdersFor(offer) {
 
     if (!priceOk) {
         if (!metalOk) {
-            offer.log("info", `doesn't offer enough metal (required = ${ours.metal}, given = ${theirs.metal}), skipping.`);
+            offer.log("info", `doesn't offer enough metal (required = ${ours.metal}, given = ${theirs.metal}), skipping this offer.`);
+            offer.abandon({ recheck: true });
+            return;
         }
+
         if (!keysOk) {
-            offer.log("info", `doesn't offer enough keys (required = ${ours.keys}, given = ${theirs.keys}), skipping.`);
+            offer.log("info", `doesn't offer enough keys (required = ${ours.keys}, given = ${theirs.keys}), skipping this offer.`);
+            offer.abandon({ recheck: true });
+            return;
         }
-
-        offer.log("info", `doesn't offer enough price (required = ${oursPrice}, given = ${theirsPrice}), skipping.`);
-        offer.logDetails("info");
-        return false;
     }
-    
-    offer.log("trade", `required = ${oursPrice}, given = ${theirsPrice}`);
 
-    return true;
+    if (offer.stocklimit && offer.stocklimit.length) {
+        let stockLimitReached = offer.stocklimit.some(itemName => {
+            return offer.items.ours.some(ourItem => ourItem.name === itemName);
+        });
+
+        if (stockLimitReached) {
+            offer.log("info", "Stock limit reached for some items, rejecting offer.");
+            offer.abandon({ recheck: true });
+            return;
+        }
+    }
+
+    // Handle finalizing the offer with all adjustments
+    finalizeOffer(offer);
 }
 
+// Function to finalize offer after processing
+async function finalizeOffer(offer) {
+    const { exchange, items } = offer;
+    const { ours, theirs } = exchange;
+
+    if (offer.bought.length > 0) {
+        offer.log("info", `Successfully bought items: ${offer.bought.join(", ")}`);
+    }
+
+    const offerSummary = {
+        ours: items.ours,
+        theirs: items.theirs,
+        bought: offer.bought,
+        rejected: offer.rejected || [],
+    };
+
+    offerSummaries[offer.id] = offerSummary;
+
+    // Log offer details for debugging or record keeping
+    fs.appendFileSync('offer_log.txt', `Offer ID: ${offer.id}\n`);
+    fs.appendFileSync('offer_log.txt', `Ours: ${JSON.stringify(offerSummary.ours)}\n`);
+    fs.appendFileSync('offer_log.txt', `Theirs: ${JSON.stringify(offerSummary.theirs)}\n`);
+    fs.appendFileSync('offer_log.txt', `Bought: ${JSON.stringify(offerSummary.bought)}\n`);
+    fs.appendFileSync('offer_log.txt', `Rejected: ${JSON.stringify(offerSummary.rejected)}\n`);
+    fs.appendFileSync('offer_log.txt', `\n`);
+}
+
+// Function to handle sell orders for the offer
 function handleSellOrdersFor(offer) {
-    return getUserTrades(offer).then(([_, response]) => {
-        if (!handleOther(offer, response.other)) {
-            return false;
-        }
+    const { ours, theirs } = offer.exchange;
 
-        return handleSellOrder(offer, response.store);
-    });
-}
-
-function obvious_Scammer(offer) {
-    let id = offer.partner64();
-    
-    let profileIs = 0;
-    let createdTime = 0;
-    let steamLvl = 0;
-
-    const halfYear = 15768000;
-    let timeCheck = Math.floor(Date.now() / 1000) - halfYear;
-    
-    let options = {
-        url: `https://api.steampowered.com/IPlayerService/GetSteamLevel/v1/?key=${manager.apiKey}&steamid=${id}`
-    };
-    
-    return Promise.all([
-        Utils.getJSON(options).then(([body]) => {
-            steamLvl = Number(body.response.player_level);
-        }),
-        Utils.getJSON({
-            url: `https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v1/?key=${manager.apiKey}&steamids=${id}`
-        }).then(([body]) => {
-            body = body.response.players[0];
-            profileIs = Number(body.communityvisibilitystate) || 0;
-            createdTime = Number(body.timecreated) || 0;
-        })
-    ]).then(() => {
-        if (steamLvl < 4 || createdTime > timeCheck || profileIs === 1) {
-            offer.log("info", `This trade can be with an obvious scammer, check manually`);
-            return false;
-        } else {
-            return true;
-        }
-    });
-}
-
-function getUserTrades(offer) {
-    const selling = offer.items.ours.map(item => item.assetid || item.id);
-
-    let options = {
-        url: automatic.apiPath("IGetUserTrades/v1"),
-        qs: {
-            "steamid": automatic.getOwnSteamID(),
-            "steamid_other": offer.partner64(),
-            "ids": selling
-        },
-        checkResponse: true
-    };
-
-    return Utils.getJSON(options).catch((msg, statusCode) => {
-        let errorMessage = msg;
-
-        if (Array.isArray(msg) && msg.length === 3) { // Cloudflare
-            errorMessage = `${msg[0]}; backpack.tf may be down, or you are captcha'd by Cloudflare (only if you experience this problem on other sites).`;
-        } else if (statusCode >= 500) {
-            errorMessage = `backpack.tf is down (${statusCode})`;
-        }
-
-        log.warn(`Error occurred getting sell listings (${errorMessage}), trying again in 1 minute.`);
-        return Utils.after.minutes(1).then(() => handleSellOrdersFor(offer));
-    });
-}
-
-function checkEscrowed(offer) {
-    const acceptEscrow = Config.get().acceptEscrow;
-    if (acceptEscrow === true || acceptEscrow === "all") {
-        return Promise.resolve(false); // User doesn't care about escrow or accepts all
+    // If there are no sell orders, we just pass the offer as it is
+    if (!automatic.sellOrdersEnabled()) {
+        offer.items.ours = ours;
+        offer.items.theirs = theirs;
+        return;
     }
 
-    return offer.determineEscrowDays().then(escrowDays => {
-        if (escrowDays > 0) {
-            if (acceptEscrow === "decline") {
-                offer.log("info", `would incur an escrow period, declining.`);
-                return offer.decline()
-                    .then(() => offer.log("debug", `declined`))
-                    .catch(err => offer.log("warn", "Cannot decline this offer"))
-                    .then(() => true);
-            } else {
-                offer.log("warn", `would incur up to ${escrowDays} escrow. Not accepting.`);
-            }
-            return true;
-        }
-        return false;
-    });
+    let updatedOurs = [...ours];
+    let updatedTheirs = [...theirs];
+
+    // Logic for handling sell orders
+    updatedOurs = updatedOurs.filter(item => !automatic.sellOrders.some(order => order.id === item.id));
+    updatedTheirs = updatedTheirs.filter(item => !automatic.sellOrders.some(order => order.id === item.id));
+
+    offer.items.ours = updatedOurs;
+    offer.items.theirs = updatedTheirs;
+
+    // Log the changes for debugging purposes
+    offer.log("info", `Sell orders processed. Updated 'ours' and 'theirs' lists.`);
 }
 
-function finalizeOffer(offer) {
-    checkEscrowed(offer).then(escrowed => {
-        if (!escrowed) {
-            acceptOffer(offer);
-        }
-    }).catch(err => {
-        console.log('Error in finalizeOffer', err);
-    });
+// Example function for converting between currencies
+function exchangeCurrencies(ours, theirs, options) {
+    const result = { metalOk: true, keysOk: true };
+
+    // Here, perform any necessary calculations based on the options
+    if (ours.metal > theirs.metal) result.metalOk = false;
+    if (ours.keys > theirs.keys) result.keysOk = false;
+
+    return result;
 }
-
-function acceptOffer(offer, tryAgain = false) {
-    // Everything looks good
-    const secret = Config.account().identity_secret;
-    let message = offer.summary({includeBuyOrders: true});
-
-    offer.log("trade", "Accepting, summary:\r\n" + message);
-
-    offerSummaries[offer.tid] = message;
-
-    offer.accept().then(status => {
-        offer.log("trade", `successfully accepted${status === 'pending' ? "; confirmation required" : ""}`);
-        if (status === 'pending') {
-            accept_offer(offer, secret);
-        }
-    }).catch(msg => {
-        offer.log("warn", `unable to accept: ${msg}`);
-        if (!tryAgain) {
-            offer.log("warn", `will try 1 more time in 30 seconds`);
-            setTimeout(() => acceptOffer(offer, true), 30000);
-        }
-    });
-}
-
-function accept_offer(offer, secret) {
-    let id = offer.tradeoffer.id;
-    
-    community.acceptConfirmationForObject(secret, id, (err) => {
-        if (err) {
-            offer.log("warn", `Failed to confirm offer: ${err}`);
-        } else {
-            offer.log("trade", `Offer ${id} confirmed`);
-        }
-    });
-}
-
-function extractAssetInfo(item) {
-    return {
-        "appid": item.appid,
-        "contextid": item.contextid,
-        "assetid": item.assetid || item.id,
-        "classid": item.classid,
-        "instanceid": item.instanceid || "0",
-        "amount": item.amount || "1",
-        "missing": item.missing ? "true" : "false"
-    };
-}
-
-function serializeOffer(offer) {
-    return {
-        "tradeofferid": offer.id,
-        "accountid_other": offer.partner.accountid,
-        "steamid_other": offer.partner.getSteamID64(),
-        "message": offer.message,
-        "expiration_time": Math.floor(offer.expires.getTime() / 1000),
-        "trade_offer_state": offer.state,
-        "is_our_offer": offer.isOurOffer ? "true" : "false",
-        "time_created": Math.floor(offer.created.getTime() / 1000),
-        "time_updated": Math.floor(offer.updated.getTime() / 1000),
-        "from_real_time_trade": offer.fromRealTimeTrade ? "true" : "false",
-        "items_to_give": offer.itemsToGive.map(extractAssetInfo),
-        "items_to_receive": offer.itemsToReceive.map(extractAssetInfo),
-        "confirmation_method": offer.confirmationMethod || 0,
-        "escrow_end_date": offer.escrowEnds ? Math.floor(offer.escrowEnds.getTime() / 1000) : 0
-    };
-}
-
-function trunc(n) { return Math.floor(n * 100) / 100; }
-
-// Ensure all async functions are properly awaited where necessary
