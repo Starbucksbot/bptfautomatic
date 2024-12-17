@@ -348,19 +348,6 @@ function handleBuyOrdersFor(offer) {
     applyFilter(offer.items, 'ours', ours, oursignore);
     applyFilter(offer.items, 'theirs', theirs, theirsignore);
 }
-
-for (let [orig, matches] of unusuals) {
-    let match = findParticleMatch(orig, matches);
-
-    if (!match) {
-        match = matches.find(item => !(item.flags?.particle));
-    }
-    
-    if (match) {
-        buyItem(offer, match, orig, orig.__index, oursignore, theirsignore);
-    }
-}
-
 applyFilter(offer.items, 'ours', ours, oursignore);
 applyFilter(offer.items, 'theirs', theirs, theirsignore);
 
