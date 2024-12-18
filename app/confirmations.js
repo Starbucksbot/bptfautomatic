@@ -3,7 +3,7 @@ const SteamTotp = require('steam-totp');
 const { ConfirmationType } = require('steamcommunity');
 const AutomaticOffer = require('./automatic-offer');
 
-const DEFAULT_CONFIRMATION_POLL_INTERVAL = 5000;
+const DEFAULT_CONFIRMATION_POLL_INTERVAL = 7000;
 
 let automatic, steam;
 let enabled = false;
