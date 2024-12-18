@@ -7,7 +7,8 @@ const Prompts = require('./prompts');
 var fs = require('fs')
 let manager, log, Config, automatic;
 
-exports.heartbeat = heartbeat;
+//exports.heartbeat = null; // Remove heartbeat export
+exports.agentPulse = agentPulse;  //gotta see if this works 
 exports.register = register;
 exports.handleBuyOrdersFor = handleBuyOrdersFor;
 exports.handleSellOrdersFor = handleSellOrdersFor;
@@ -77,49 +78,34 @@ function updateBuyOrders(body) {
     return {updated, added, removed};
 }
 
-async function heartbeat() {
-
-    try{
-
+async function agentPulse() {
+    try {
         const token = Config.account().bptfToken;
         const apiKey = Config.account().bptApiKey;
         const boEnabled = automatic.buyOrdersEnabled();
         const etag = automatic.buyOrdersEtag;
 
         let params = {
-            method: "alive",
             token: token,
-            i_understand_the_risks: "true",
-            intent: "0",
+            intent: "0", // Indicating buy orders
             item_names: "1",
-            automatic: "all"
+            automatic: "all",
         };
-        
-        if (boEnabled && etag) params.etag = etag;
 
-        const [resp, resp2] = await Utils.postJSON({
-                url: automatic.apiPath("IGetCurrencies/v1"),
-                checkResponse: true,
-                form: {key: apiKey}
-        })
+        if (boEnabled && etag) {
+            params.etag = etag;
+        }
 
-        if(!resp2?.currencies?.keys?.price?.value) throw(['Cannot get keys data', 403])
-
-        automatic.keyPrice = resp2.currencies.keys.price.value;
-
-        await Utils.postJSON2({
-            url: automatic.apiPath("aux/heartbeat/v1"),
+        const response = await Utils.postJSON({
+            url: automatic.apiPath("agent/pulse"),
             form: params
-          })
+        });
 
-        const [body] = await Utils.postJSON({
-                url: automatic.apiPath("classifieds/listings/v1"),
-                form: params
-            })
-                
+        const body = response[0]; 
+
         let updates = [];
-        
-        let currenciesChanged = JSON.stringify(automatic.listings) !== JSON.stringify(body.listings); // might change later to be more efficient
+
+        let currenciesChanged = JSON.stringify(automatic.listings) !== JSON.stringify(body.listings);
         let buyOrdersChanged = updateBuyOrders(body);
         let bumped = body.bumped;
 
@@ -141,20 +127,21 @@ async function heartbeat() {
             if (boupdates.length) updates.push(boupdates.join(", ") + ".");
         }
 
-        log[updates.length ? "info" : "debug"](`Heartbeat sent to backpack.tf. ${updates.join(" ")}`);
-        return(1000 * 95);
+        log[updates.length ? "info" : "debug"](`Agent pulse sent to backpack.tf. ${updates.join(" ")}`);
 
-    } catch(err){
-        const [msg, statusCode, data] = err
+        return 1000 * 95; // Return interval in milliseconds
 
-        if(data?.response?.message){
-            log.warn("Invalid backpack.tf api: " + data.response.message || "(no reason given)");
-            return ("getApiKey");
+    } catch (err) {
+        const [msg, statusCode, data] = err;
+
+        if (data?.response?.message) {
+            log.warn("Invalid backpack.tf API: " + data.response.message || "(no reason given)");
+            return "getApiKey";
         }
 
-        if(data && data.message && data.message.includes('access token')){
+        if (data && data.message && data.message.includes('access token')) {
             log.warn("Invalid backpack.tf token: " + data.message || "(no reason given)");
-            return ("getToken");
+            return "getToken";
         }
 
         if (Array.isArray(msg) && msg.length === 3) { // Cloudflare
@@ -163,10 +150,10 @@ async function heartbeat() {
 
         log.warn(`Error ${statusCode || ""} occurred contacting backpack.tf (${msg}), trying again in 1 minute`.trim());
 
-        return(1000 * 60 * 1);
+        return 1000 * 60 * 1; // Retry after 1 minute
     }
-
 }
+
    
  
 

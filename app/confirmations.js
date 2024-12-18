@@ -1,85 +1,104 @@
+// ./confirmation-handler.js
 const SteamTotp = require('steam-totp');
-const ConfirmationType = require('steamcommunity').ConfirmationType;
-const CONFIRMATION_POLL_INTERVAL = 10000;
+const { ConfirmationType } = require('steamcommunity');
+const AutomaticOffer = require('./automatic-offer');
 
-let automatic, steam, AutomaticOffer;
+const DEFAULT_CONFIRMATION_POLL_INTERVAL = 5000;
+
+let automatic, steam;
 let enabled = false;
 let offerids = {};
-
 let identity_secret = "";
 
-function cm() { return automatic.confirmationsMode(); }
-function timenow() { return Math.floor(Date.now() / 1000);}
-function totpKey(secret, tag) {
-    return SteamTotp.getConfirmationKey(secret, timenow(), tag);
-}
+/**
+ * Helper functions
+ */
+const getCurrentTime = () => Math.floor(Date.now() / 1000);
 
-exports.enabled = () => {
-    return cm() !== "none";
+const generateTotpKey = (secret, tag) =>
+    SteamTotp.getConfirmationKey(secret, getCurrentTime(), tag);
+
+const isEnabled = () => automatic.confirmationsMode() !== "none";
+
+/**
+ * Log confirmation details and clean up offer IDs.
+ */
+const handleConfirmation = (confirmation, cid, handledByAutomatic) => {
+    const creator = confirmation.creator;
+    let message = `Confirmation ${cid} accepted`;
+    if (handledByAutomatic) {
+        message += ` (belonging to trade offer ${AutomaticOffer.fmtid(creator)})`;
+        delete offerids[creator]; // Clean up
+    }
+    automatic.log.verbose(message + ".");
 };
 
-const accept = exports.accept = (confirmation, secret) => {
-
-    let cid = "#" + confirmation.id;
+/**
+ * Accept a confirmation.
+ */
+const accept = async (confirmation, secret) => {
+    const cid = `#${confirmation.id}`;
     automatic.log.verbose(`Accepting confirmation ${cid}`);
-    
-    const time = Math.floor(Date.now() / 1000);
-    confirmation.respond(time, totpKey(secret, "allow"), true, (err) => {
-        if (err) {
-            return automatic.log.error(`Error accepting confirmatin ${cid}.`);
-        }
 
-        let creator = confirmation.creator;
-        let message = `Confirmation ${cid} accepted`;
-        let handledByAutomatic = confirmation.type === ConfirmationType.Trade && offerids[creator];
-
-        if (handledByAutomatic) {
-            message += ` (belonging to trade offer ${AutomaticOffer.fmtid(creator)})`; 
-            offerids[creator] = null;
-        }
-        
-        automatic.log.verbose(message + ".");
-    });
+    try {
+        const time = getCurrentTime();
+        await confirmation.respond(time, generateTotpKey(secret, "allow"), true);
+        const handledByAutomatic =
+            confirmation.type === ConfirmationType.Trade &&
+            offerids[confirmation.creator];
+        handleConfirmation(confirmation, cid, handledByAutomatic);
+    } catch (err) {
+        automatic.log.error(`Error accepting confirmation ${cid}: ${err.message}`);
+    }
 };
 
-
-exports.enable = () => {
-    if (enabled) return;
-    if (!exports.enabled()) return;
+/**
+ * Enable the confirmation handler.
+ */
+const enable = (pollInterval = DEFAULT_CONFIRMATION_POLL_INTERVAL) => {
+    if (enabled || !isEnabled()) return;
 
     enabled = true;
 
-    steam.on('confKeyNeeded', (tag, callback) => {
-        callback(null, timenow(), totpKey(identity_secret, tag));
-    });
-    steam.on('newConfirmation', (confirmation) => {
-        let mode = cm();
-        if (mode === "all") {
+    steam.on("confKeyNeeded", (tag, callback) =>
+        callback(null, getCurrentTime(), generateTotpKey(identity_secret, tag))
+    );
+
+    steam.on("newConfirmation", (confirmation) => {
+        const mode = automatic.confirmationsMode();
+        const creatorOffers = offerids[confirmation.creator];
+        const isMarket = confirmation.type === ConfirmationType.MarketListing;
+
+        if (
+            mode === "all" ||
+            (mode === "own" && creatorOffers) ||
+            (mode === "own+market" && (creatorOffers || isMarket))
+        ) {
             accept(confirmation, identity_secret);
-        } else if (mode === "own") {
-            if (offerids[confirmation.creator]) {
-                accept(confirmation, identity_secret);
-            }
-        } else if (mode === "own+market") {
-            if (offerids[confirmation.creator] || confirmation.type === ConfirmationType.MarketListing) {
-                accept(confirmation, identity_secret);
-            }
-        } // ignore for "none"
+        }
     });
 
-    steam.startConfirmationChecker(CONFIRMATION_POLL_INTERVAL);
+    steam.startConfirmationChecker(pollInterval);
 };
+
+/**
+ * Public API
+ */
+exports.enabled = isEnabled;
+
+exports.accept = accept;
+
+exports.enable = () => enable();
 
 exports.setSecret = (secret) => {
     offerids = {};
     identity_secret = secret;
-    exports.enable();
-}
-
+    enable();
+};
 
 exports.check = () => {
     if (!enabled) return;
-   // steam.checkConfirmations();
+    steam.checkConfirmations();
 };
 
 exports.addOffer = (id) => {
@@ -89,7 +108,4 @@ exports.addOffer = (id) => {
 exports.register = (Automatic) => {
     automatic = Automatic;
     steam = automatic.steam;
-
-    // see ./automatic.js for why
-    AutomaticOffer = require('./automatic-offer');
 };
