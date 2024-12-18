@@ -183,55 +183,50 @@ function heartbeatLoop() {
 }
 
 async function setupTradeManager() {
-    try{
+    try {
+        const timeout = await backpack.agentPulse(); // Updated function call
 
-        const timeout = await backpack.heartbeat()
-      
         if (timeout === "getToken") {
             return backpack.getToken().then(setupTradeManager);
         }
+
         if (timeout === "getApiKey") {
             return backpack.getApiKey().then(setupTradeManager);
         }
+
         const acc = Config.account();
 
-        if (Confirmations.enabled()) {
-            if (acc.identity_secret) {
-                log.info("Starting Steam confirmation checker (accepting " + automatic.confirmationsMode() + ")");
-                Confirmations.setSecret(acc.identity_secret);
-            } else {
-                log.warn("Trade offers won't be confirmed automatically. In order to automatically accept offers, you should supply an identity_secret. Type help identity_secret for help on how to do this. You can hide this message by typing `confirmations none`.");
-            }
+        if (Confirmations.enabled() && acc.identity_secret) {
+            log.info("Starting Steam confirmation checker...");
+            Confirmations.setSecret(acc.identity_secret);
         } else {
-            log.verbose("Trade confirmations are disabled, not starting confirmation checker.");
+            log.warn("Trade offers won't be confirmed automatically. Provide an identity_secret to enable auto-confirmation.");
         }
-      
 
-        // Start the input console
-        log.debug("Launching input console.");
         appConsole.startConsole(automatic);
-        
+
         if (!g_RelogInterval) {
-            //g_RelogInterval = setInterval(relog, 1000 * 60 * 60 * 1); // every hour
+            g_RelogInterval = setInterval(relog, 1000 * 60 * 60); // Every hour
         }
-        setTimeout(heartbeatLoop, timeout);
+
+        setTimeout(() => setupTradeManager(), timeout);
 
         manager.setCookies(communityCookies, (err) => {
             if (err) {
-                log.error("Can't get apiKey from Steam: " + err);
+                log.error("Cannot set Steam API cookies: " + err.message);
                 process.exit(1);
             }
 
-            log.info(`Automatic ready. Sell orders enabled; Buy orders ${automatic.buyOrdersEnabled() ? "enabled" : "disabled (type buyorders toggle to enable, help buyorders for info)"}`);
+            log.info("Automatic ready.");
             checkOfferCount();
-            setInterval(checkOfferCount, 1000 * 60 * 5);
+            setInterval(checkOfferCount, 1000 * 60 * 5); // Every 5 minutes
         });
-    } catch(err){
-        console.log(err, 'err')
-        Utils.after.timeout(1000 * 60 * 1).then(setupTradeManager);
-        
-    };
+    } catch (err) {
+        console.error("Error in setupTradeManager:", err.message);
+        Utils.after.seconds(60).then(setupTradeManager); // Retry after 1 minute
+    }
 }
+
 
 function relog() {
     const acc = Config.account();
