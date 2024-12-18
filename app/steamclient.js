@@ -184,7 +184,7 @@ function heartbeatLoop() {
 
 async function setupTradeManager() {
     try {
-        const timeout = await backpack.agentPulse(); // Updated function call
+        const timeout = await backpack.agentPulse(); // Call the updated agentPulse function
 
         if (timeout === "getToken") {
             return backpack.getToken().then(setupTradeManager);
